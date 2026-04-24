@@ -208,6 +208,41 @@
     if (btn) btn.disabled = level >= maxLevels();
   }
 
+  // Next li.node in document order: first visible child, else next sibling,
+  // else first ancestor's next sibling. Returns null if this is the last cell.
+  function getNextCell(li) {
+    const childUl = li.querySelector(":scope > ul.tree");
+    if (childUl && childUl.children.length && !li.classList.contains("collapsed")) {
+      return childUl.children[0];
+    }
+    let cur = li;
+    while (cur) {
+      const sib = cur.nextElementSibling;
+      if (sib && sib.matches("li.node")) return sib;
+      const parentLi = cur.parentElement ? cur.parentElement.closest("li.node") : null;
+      if (!parentLi) return null;
+      cur = parentLi;
+    }
+    return null;
+  }
+
+  // Previous li.node in document order: previous sibling's deepest visible
+  // descendant, else the parent li. Returns null if this is the first cell.
+  function getPrevCell(li) {
+    const sib = li.previousElementSibling;
+    if (sib && sib.matches("li.node")) {
+      let cur = sib;
+      while (true) {
+        const childUl = cur.querySelector(":scope > ul.tree");
+        if (childUl && childUl.children.length && !cur.classList.contains("collapsed")) {
+          cur = childUl.children[childUl.children.length - 1];
+        } else break;
+      }
+      return cur;
+    }
+    return li.parentElement ? li.parentElement.closest("li.node") : null;
+  }
+
   function focusNode(li) {
     const t = li.querySelector(":scope > .row > .text");
     if (!t) return;
@@ -695,6 +730,35 @@
       e.preventDefault();
       addSibling(li);
       scheduleSave();
+      return;
+    }
+    // Arrow Up/Down -> move caret to prev/next cell in document order
+    if (e.key === "ArrowUp" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      const prev = getPrevCell(li);
+      if (prev) {
+        e.preventDefault();
+        focusNode(prev);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      const next = getNextCell(li);
+      if (next) {
+        e.preventDefault();
+        focusNode(next);
+      }
+      return;
+    }
+    // Shift+Enter -> jump to next cell in document order, or create a sibling if there is none
+    if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      const next = getNextCell(li);
+      if (next) {
+        focusNode(next);
+      } else {
+        addSibling(li);
+        scheduleSave();
+      }
       return;
     }
     // Plain Enter -> newline inside text (with list continuation)
