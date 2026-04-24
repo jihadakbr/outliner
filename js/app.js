@@ -99,6 +99,7 @@
     actions.appendChild(makeActionBtn("btn-sibling", "+", "Add item (Ctrl+Enter)", () => addSibling(li)));
     actions.appendChild(makeActionBtn("btn-child", "↳", "Add sub-item", () => addChild(li)));
     actions.appendChild(makeActionBtn("btn-bold", "B", "Bold (Ctrl+B)", () => { txt.focus(); document.execCommand("bold"); }));
+    actions.appendChild(makeActionBtn("btn-bullet-dash", "-", "Dash bullet (does not nest into hollow)", () => insertListAtLineStart(txt, "dash")));
     actions.appendChild(makeActionBtn("btn-bullet-dark", "●", "Indented bullet (filled)", () => insertListAtLineStart(txt, "black")));
     actions.appendChild(makeActionBtn("btn-bullet-light", "○", "Indented bullet (hollow)", () => insertListAtLineStart(txt, "white")));
     actions.appendChild(makeActionBtn("btn-num1", "1.", "Numbered list (1., 2.)", () => {
@@ -163,6 +164,15 @@
     const level = parseInt(li.dataset.level, 10);
     const sib = createNode(level);
     li.after(sib);
+    renumber();
+    focusNode(sib);
+    updateEmpty();
+  }
+
+  function addSiblingAbove(li) {
+    const level = parseInt(li.dataset.level, 10);
+    const sib = createNode(level);
+    li.before(sib);
     renumber();
     focusNode(sib);
     updateEmpty();
@@ -348,12 +358,17 @@
   // ○ wrapped in <span class="wb"> so it can be shrunk to match ● visually.
   const BLACK_PREFIX = "  ●  ";        // 5 chars in flat text
   const WHITE_PREFIX = "      ○  ";    // 9 chars in flat text
+  const DASH_PREFIX  = "  -  ";        // initial dash (indent = 2); extra "  " pairs may precede
   const BLACK_LEN = 5;
   const WHITE_LEN = 9;
+  // Dash line: any 2-space pairs of indent (>=1), then "-  ". Indent grows/shrinks via Tab / Shift+Tab.
+  const DASH_RE = /^((?:  )+)-  /;
 
   function matchBullet(line) {
     if (line.startsWith(WHITE_PREFIX)) return { type: "white", prefix: WHITE_PREFIX, len: WHITE_LEN };
     if (line.startsWith(BLACK_PREFIX)) return { type: "black", prefix: BLACK_PREFIX, len: BLACK_LEN };
+    const dm = line.match(DASH_RE);
+    if (dm) return { type: "dash", prefix: dm[0], len: dm[0].length, indent: dm[1].length };
     return null;
   }
 
@@ -405,56 +420,25 @@
   }
 
   function writeNumber(type, token) {
-    const sel = window.getSelection();
-    if (!sel.rangeCount) return;
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
     const prefix = type === "num1" ? `  ${token}.  ` : `      ${token}.  `;
-    const node = document.createTextNode(prefix);
-    range.insertNode(node);
-    const after = document.createRange();
-    after.setStart(node, node.nodeValue.length);
-    after.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(after);
+    // execCommand path keeps native undo/redo working and replaces any active selection atomically.
+    document.execCommand("insertText", false, prefix);
   }
 
   function writeListItem(kind, token) {
-    if (kind === "black" || kind === "white") writeBullet(kind);
+    if (kind === "black" || kind === "white" || kind === "dash") writeBullet(kind);
     else writeNumber(kind, token);
   }
 
-  // Inserts the bullet prefix at the current caret via Range API, parking the
-  // caret in a *plain* text node after the span so new typing is not styled .wb.
-  function writeBullet(type) {
-    const sel = window.getSelection();
-    if (!sel.rangeCount) return;
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-
-    const frag = document.createDocumentFragment();
-    let caretNode;
-
-    if (type === "white") {
-      frag.appendChild(document.createTextNode("      "));
-      const span = document.createElement("span");
-      span.className = "wb";
-      span.textContent = "○";
-      frag.appendChild(span);
-      caretNode = document.createTextNode("  ");
-      frag.appendChild(caretNode);
-    } else {
-      caretNode = document.createTextNode("  ●  ");
-      frag.appendChild(caretNode);
-    }
-
-    range.insertNode(frag);
-
-    const after = document.createRange();
-    after.setStart(caretNode, caretNode.nodeValue.length);
-    after.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(after);
+  // Inserts the bullet prefix via execCommand("insertText") so native undo/redo
+  // treats the whole prefix as one atomic entry. insertHTML with nested spans
+  // produced partial/ghost undo states, so ○ is inserted as plain text here.
+  function writeBullet(type, customPrefix) {
+    let prefix;
+    if (type === "white") prefix = "      ○  ";
+    else if (type === "dash") prefix = customPrefix || "  -  ";
+    else prefix = "  ●  ";
+    document.execCommand("insertText", false, prefix);
   }
 
   function getFlatText(el) {
@@ -566,18 +550,128 @@
     sel.addRange(r);
   }
 
+  // Returns {start, end} as flat-text offsets for the current selection inside `el`.
+  function getSelectionOffsets(el) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (range.startContainer !== el && !el.contains(range.startContainer)) return null;
+    function offsetOf(container, offset) {
+      const pre = document.createRange();
+      pre.selectNodeContents(el);
+      pre.setEnd(container, offset);
+      const frag = pre.cloneContents();
+      let n = 0;
+      (function walk(node) {
+        for (const c of node.childNodes) {
+          if (c.nodeType === 3) n += c.nodeValue.length;
+          else if (c.nodeName === "BR") n += 1;
+          else if (c.nodeType === 1) walk(c);
+        }
+      })(frag);
+      return n;
+    }
+    const start = offsetOf(range.startContainer, range.startOffset);
+    const end = offsetOf(range.endContainer, range.endOffset);
+    return { start: Math.min(start, end), end: Math.max(start, end) };
+  }
+
   function insertListAtLineStart(txt, kind, token) {
     txt.focus();
-    const ctx = getLineContext(txt);
-    if (!ctx) { writeListItem(kind, token); return; }
-    const existing = matchList(ctx.line);
-    if (existing) {
-      selectOffsets(txt, ctx.lineStart, ctx.lineStart + existing.len);
-      document.execCommand("delete");
-    } else {
-      setCaretAtOffset(txt, ctx.lineStart);
+    const offs = getSelectionOffsets(txt);
+    const flat = getFlatText(txt);
+    if (!offs) { writeListItem(kind, token); return; }
+
+    const firstLineStart = flat.lastIndexOf("\n", offs.start - 1) + 1;
+    const nlAfterEnd = flat.indexOf("\n", Math.max(offs.end - 1, firstLineStart));
+    const lastLineEnd = nlAfterEnd === -1 ? flat.length : nlAfterEnd;
+
+    // Collect lines covered by the selection, top-down.
+    const lines = [];
+    let p = firstLineStart;
+    while (p <= lastLineEnd) {
+      const nl = flat.indexOf("\n", p);
+      const lineEnd = nl === -1 ? flat.length : nl;
+      lines.push({ start: p, end: lineEnd, text: flat.slice(p, lineEnd) });
+      if (nl === -1 || lineEnd >= lastLineEnd) break;
+      p = nl + 1;
     }
-    writeListItem(kind, token);
+
+    // Single-line fast path (preserves existing behavior, including caret placement).
+    if (lines.length <= 1) {
+      const ln = lines[0] || { start: firstLineStart, end: lastLineEnd, text: "" };
+      const existing = matchList(ln.text);
+      if (existing) selectOffsets(txt, ln.start, ln.start + existing.len);
+      else setCaretAtOffset(txt, ln.start);
+      writeListItem(kind, token);
+      return;
+    }
+
+    // Multi-line: apply bottom-up so earlier offsets remain valid.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const ln = lines[i];
+      let t = token;
+      if (kind === "num1") {
+        t = String(parseInt(token || "1", 10) + i);
+      } else if (kind === "num2") {
+        const base = (token || "a").charCodeAt(0);
+        t = String.fromCharCode(Math.min(base + i, "z".charCodeAt(0)));
+      }
+      const existing = matchList(ln.text);
+      if (existing) selectOffsets(txt, ln.start, ln.start + existing.len);
+      else setCaretAtOffset(txt, ln.start);
+      writeListItem(kind, t);
+    }
+  }
+
+  // Indent/outdent logic for a single line (used by Tab / Shift+Tab, per-line in multi-line selections).
+  function indentLine(txt, ln) {
+    const m = matchList(ln.text);
+    if (m && m.type === "dash") {
+      setCaretAtOffset(txt, ln.start);
+      document.execCommand("insertText", false, "  ");
+    } else if (m && m.type === "black") {
+      selectOffsets(txt, ln.start, ln.start + m.len);
+      writeBullet("white");
+    } else if (m && m.type === "num1") {
+      selectOffsets(txt, ln.start, ln.start + m.len);
+      writeNumber("num2", "a");
+    } else if (m && (m.type === "white" || m.type === "num2")) {
+      // Already at max nest in its chain; no-op for multi-line indent.
+      return;
+    } else {
+      // Non-list line: prepend 2 spaces at line start (multi-line indent convention).
+      setCaretAtOffset(txt, ln.start);
+      document.execCommand("insertText", false, "  ");
+    }
+  }
+
+  function outdentLine(txt, ln) {
+    const m = matchList(ln.text);
+    if (m && m.type === "dash") {
+      if (m.indent > 2) {
+        selectOffsets(txt, ln.start, ln.start + 2);
+        document.execCommand("delete");
+      } else {
+        selectOffsets(txt, ln.start, ln.start + m.len);
+        document.execCommand("delete");
+      }
+    } else if (m && m.type === "white") {
+      selectOffsets(txt, ln.start, ln.start + m.len);
+      writeBullet("black");
+    } else if (m && m.type === "black") {
+      selectOffsets(txt, ln.start, ln.start + m.len);
+      document.execCommand("delete");
+    } else if (m && m.type === "num2") {
+      selectOffsets(txt, ln.start, ln.start + m.len);
+      writeNumber("num1", "1");
+    } else if (m && m.type === "num1") {
+      selectOffsets(txt, ln.start, ln.start + m.len);
+      document.execCommand("delete");
+    } else if (ln.text.startsWith("  ")) {
+      selectOffsets(txt, ln.start, ln.start + 2);
+      document.execCommand("delete");
+    }
   }
 
   // ---------- Keyboard shortcuts ----------
@@ -616,7 +710,9 @@
           document.execCommand("delete");
         } else if (ctx.lineBefore.length >= m.len) {
           document.execCommand("insertLineBreak");
-          if (m.type === "black" || m.type === "white") {
+          if (m.type === "dash") {
+            writeBullet("dash", m.prefix);
+          } else if (m.type === "black" || m.type === "white") {
             writeBullet(m.type);
           } else {
             writeNumber(m.type, nextToken(m.type, m.token));
@@ -632,73 +728,63 @@
       scheduleSave();
       return;
     }
-    if (e.key === "Tab" && !e.shiftKey) {
+    if (e.key === "Tab") {
       e.preventDefault();
       const txt = li.querySelector(":scope > .row > .text");
-      const ctx = txt ? getLineContext(txt) : null;
-      const m = ctx ? matchList(ctx.line) : null;
-      if (m && m.type === "black") {
-        // Black bullet -> white (adds 4 more spaces of indent)
-        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
-        document.execCommand("delete");
-        setCaretAtOffset(txt, ctx.lineStart);
-        writeBullet("white");
-      } else if (m && m.type === "num1") {
-        // Numbered 1. -> sub-letter a. (nest)
-        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
-        document.execCommand("delete");
-        setCaretAtOffset(txt, ctx.lineStart);
-        writeNumber("num2", findNextNumber(txt, ctx, "num2"));
+      if (!txt) return;
+      const offs = getSelectionOffsets(txt);
+      const flat = getFlatText(txt);
+      const spansMultipleLines =
+        offs && offs.start !== offs.end &&
+        flat.indexOf("\n", offs.start) !== -1 &&
+        flat.indexOf("\n", offs.start) < offs.end;
+
+      if (spansMultipleLines) {
+        const firstLineStart = flat.lastIndexOf("\n", offs.start - 1) + 1;
+        const nlAfterEnd = flat.indexOf("\n", Math.max(offs.end - 1, firstLineStart));
+        const lastLineEnd = nlAfterEnd === -1 ? flat.length : nlAfterEnd;
+        const lines = [];
+        let p = firstLineStart;
+        while (p <= lastLineEnd) {
+          const nl = flat.indexOf("\n", p);
+          const lineEnd = nl === -1 ? flat.length : nl;
+          lines.push({ start: p, end: lineEnd, text: flat.slice(p, lineEnd) });
+          if (nl === -1 || lineEnd >= lastLineEnd) break;
+          p = nl + 1;
+        }
+        // Bottom-up so offsets above stay valid after each mutation.
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (e.shiftKey) outdentLine(txt, lines[i]);
+          else indentLine(txt, lines[i]);
+        }
+        scheduleSave();
+        return;
+      }
+
+      // Single-line path
+      const ctx = getLineContext(txt);
+      const ln = ctx ? { start: ctx.lineStart, end: ctx.lineEnd, text: ctx.line } : null;
+      if (!ln) {
+        if (!e.shiftKey) document.execCommand("insertText", false, "  ");
+        scheduleSave();
+        return;
+      }
+      if (e.shiftKey) {
+        outdentLine(txt, ln);
       } else {
-        document.execCommand("insertText", false, "  ");
+        const m = matchList(ln.text);
+        if (!m || m.type === "white" || m.type === "num2") {
+          // Non-list line or already-max-nested prefix: insert 2 spaces at the current caret.
+          document.execCommand("insertText", false, "  ");
+        } else if (m.type === "num1") {
+          // 1. -> a. continues numbering from any earlier a./b./... above this line
+          selectOffsets(txt, ln.start, ln.start + m.len);
+          writeNumber("num2", findNextNumber(txt, { lineStart: ln.start }, "num2"));
+        } else {
+          indentLine(txt, ln);
+        }
       }
       scheduleSave();
-      return;
-    }
-    if (e.key === "Tab" && e.shiftKey) {
-      e.preventDefault();
-      const txt = li.querySelector(":scope > .row > .text");
-      const ctx = txt ? getLineContext(txt) : null;
-      const m = ctx ? matchList(ctx.line) : null;
-      if (m && m.type === "white") {
-        // White bullet -> black (drop 4 spaces of indent)
-        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
-        document.execCommand("delete");
-        setCaretAtOffset(txt, ctx.lineStart);
-        writeBullet("black");
-        scheduleSave();
-        return;
-      }
-      if (m && m.type === "black") {
-        // Black bullet -> remove the prefix
-        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
-        document.execCommand("delete");
-        scheduleSave();
-        return;
-      }
-      if (m && m.type === "num2") {
-        // a. -> 1. (un-nest, continue numbering from above if any)
-        const numTok = findNextNumber(txt, ctx, "num1");
-        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
-        document.execCommand("delete");
-        setCaretAtOffset(txt, ctx.lineStart);
-        writeNumber("num1", numTok);
-        scheduleSave();
-        return;
-      }
-      if (m && m.type === "num1") {
-        // 1. -> remove the prefix
-        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
-        document.execCommand("delete");
-        scheduleSave();
-        return;
-      }
-      // Non-list line: remove up to 2 leading spaces from the current line
-      if (ctx && ctx.line.startsWith("  ")) {
-        selectOffsets(txt, ctx.lineStart, ctx.lineStart + 2);
-        document.execCommand("delete");
-        scheduleSave();
-      }
       return;
     }
     if (e.key === "Delete" && (e.ctrlKey || e.metaKey)) {
@@ -1207,6 +1293,65 @@
   projectSearch.addEventListener("input", () => {
     searchQuery = projectSearch.value;
     renderSidebar();
+  });
+
+  // ---------- Hover shortcuts (not in text-edit mode) ----------
+  // a = add sibling above, b = add sibling below, dd (double-d) = delete the hovered cell.
+  let hoveredLi = null;
+  let lastDPressAt = 0;
+  const DD_WINDOW_MS = 500;
+
+  root.addEventListener("mouseover", (e) => {
+    const li = e.target.closest("li.node");
+    if (li && root.contains(li)) hoveredLi = li;
+  });
+  root.addEventListener("mouseout", (e) => {
+    if (!e.relatedTarget || !root.contains(e.relatedTarget)) hoveredLi = null;
+  });
+
+  function isEditingText() {
+    const a = document.activeElement;
+    if (!a) return false;
+    if (a.tagName === "INPUT" || a.tagName === "TEXTAREA") return true;
+    if (a.isContentEditable) return true;
+    return false;
+  }
+
+  function blurActive() {
+    const a = document.activeElement;
+    if (a && typeof a.blur === "function") a.blur();
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (isEditingText()) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!hoveredLi || !root.contains(hoveredLi)) return;
+    const k = e.key.toLowerCase();
+    if (k === "a") {
+      e.preventDefault();
+      addSiblingAbove(hoveredLi);
+      blurActive();
+      scheduleSave();
+    } else if (k === "b") {
+      e.preventDefault();
+      addSibling(hoveredLi);
+      blurActive();
+      scheduleSave();
+    } else if (k === "d") {
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastDPressAt <= DD_WINDOW_MS) {
+        lastDPressAt = 0;
+        const toDelete = hoveredLi;
+        removeNode(toDelete);
+        blurActive();
+        scheduleSave();
+      } else {
+        lastDPressAt = now;
+      }
+    } else {
+      lastDPressAt = 0;
+    }
   });
 
   // ---------- Init ----------

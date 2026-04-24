@@ -530,9 +530,15 @@ li.node.dragging { opacity: .6; }
 }
 .text:hover { border-color: var(--border); background: var(--surface); }
 .text:focus { border-color: var(--primary); background: var(--surface); box-shadow: 0 0 0 3px var(--primary-soft); }
+.text { position: relative; }
 .text.is-empty::before {
   content: attr(data-placeholder);
   color: var(--text-subtle);
+  position: absolute;
+  left: 9px;
+  top: 5px;
+  pointer-events: none;
+  user-select: none;
 }
 .text b, .text strong { font-weight: 700; }
 
@@ -572,14 +578,17 @@ li.node.dragging { opacity: .6; }
 .btn-bold { font-family: Georgia, serif; font-style: normal; font-weight: 800; }
 .btn-bold:hover { background: var(--text); color: #fff; border-color: var(--text); }
 .btn-bullet-dark,
-.btn-bullet-light {
+.btn-bullet-light,
+.btn-bullet-dash {
   font-size: 12px;
   line-height: 1;
   font-family: "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif;
 }
 .btn-bullet-light { font-size: 11px; }
+.btn-bullet-dash { font-weight: 700; }
 .btn-bullet-dark:hover,
-.btn-bullet-light:hover { background: var(--text); color: #fff; border-color: var(--text); }
+.btn-bullet-light:hover,
+.btn-bullet-dash:hover { background: var(--text); color: #fff; border-color: var(--text); }
 .btn-num1,
 .btn-num2 {
   font-size: 11px;
