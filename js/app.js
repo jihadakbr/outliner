@@ -569,7 +569,6 @@
 
   // ---------- Init ----------
   if (!restore()) {
-    tocTitle.textContent = "Presentation Outline";
     root.appendChild(createNode(1));
   }
   renumber();
