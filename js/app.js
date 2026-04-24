@@ -1,7 +1,8 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "toc-builder.v2";
+  const STORAGE_KEY = "outliner.projects.v1";
+  const LEGACY_KEYS = ["toc-builder.v2", "toc-builder.v1"];
 
   const root = document.getElementById("root");
   const paper = document.getElementById("paper");
@@ -9,6 +10,17 @@
   const statusEl = document.getElementById("status");
   const tocTitle = document.getElementById("toc-title");
   const tocSub = document.getElementById("toc-sub");
+  const sidebar = document.getElementById("sidebar");
+  const sidebarToggle = document.getElementById("sidebarToggle");
+  const projectListEl = document.getElementById("projectList");
+  const newProjectBtn = document.getElementById("newProjectBtn");
+  const activeProjectName = document.getElementById("activeProjectName");
+  const projectSearch = document.getElementById("projectSearch");
+  const sidebarClose = document.getElementById("sidebarClose");
+  const sidebarBackdrop = document.getElementById("sidebarBackdrop");
+
+  let store = { projects: [], currentId: null };
+  let searchQuery = "";
 
   const placeholders = [
     "Chapter",
@@ -85,8 +97,22 @@
     const actions = document.createElement("div");
     actions.className = "actions";
     actions.appendChild(makeActionBtn("btn-sibling", "+", "Add item (Ctrl+Enter)", () => addSibling(li)));
-    actions.appendChild(makeActionBtn("btn-child", "↳", "Add sub-item (Tab)", () => addChild(li)));
+    actions.appendChild(makeActionBtn("btn-child", "↳", "Add sub-item", () => addChild(li)));
     actions.appendChild(makeActionBtn("btn-bold", "B", "Bold (Ctrl+B)", () => { txt.focus(); document.execCommand("bold"); }));
+    actions.appendChild(makeActionBtn("btn-bullet-dark", "●", "Indented bullet (filled)", () => insertListAtLineStart(txt, "black")));
+    actions.appendChild(makeActionBtn("btn-bullet-light", "○", "Indented bullet (hollow)", () => insertListAtLineStart(txt, "white")));
+    actions.appendChild(makeActionBtn("btn-num1", "1.", "Numbered list (1., 2.)", () => {
+      txt.focus();
+      const ctx = getLineContext(txt);
+      const token = ctx ? findNextNumber(txt, ctx, "num1") : "1";
+      insertListAtLineStart(txt, "num1", token);
+    }));
+    actions.appendChild(makeActionBtn("btn-num2", "a.", "Numbered sub-list (a., b.)", () => {
+      txt.focus();
+      const ctx = getLineContext(txt);
+      const token = ctx ? findNextNumber(txt, ctx, "num2") : "a";
+      insertListAtLineStart(txt, "num2", token);
+    }));
     actions.appendChild(makeActionBtn("btn-del", "×", "Delete (Ctrl+Del)", () => removeNode(li)));
 
     row.append(handle, toggle, badge, txt, actions);
@@ -316,6 +342,244 @@
     renumber();
   }
 
+  // ---------- Bullet helpers ----------
+  // Black bullet: "  ●  " (indent 2)
+  // White bullet: "      ○  " (indent 6 = black's 2 + nesting stride 4).
+  // ○ wrapped in <span class="wb"> so it can be shrunk to match ● visually.
+  const BLACK_PREFIX = "  ●  ";        // 5 chars in flat text
+  const WHITE_PREFIX = "      ○  ";    // 9 chars in flat text
+  const BLACK_LEN = 5;
+  const WHITE_LEN = 9;
+
+  function matchBullet(line) {
+    if (line.startsWith(WHITE_PREFIX)) return { type: "white", prefix: WHITE_PREFIX, len: WHITE_LEN };
+    if (line.startsWith(BLACK_PREFIX)) return { type: "black", prefix: BLACK_PREFIX, len: BLACK_LEN };
+    return null;
+  }
+
+  // Numbered lists
+  // Level 1: "  1.  " (2sp indent + arabic digits + ". " + 2sp)
+  // Level 2: "      a.  " (6sp indent + lowercase letter + ". " + 2sp)
+  const NUM1_RE = /^  (\d+)\.  /;
+  const NUM2_RE = /^      ([a-z])\.  /;
+
+  function matchNumber(line) {
+    let m;
+    if ((m = line.match(NUM2_RE))) return { type: "num2", prefix: m[0], len: m[0].length, token: m[1] };
+    if ((m = line.match(NUM1_RE))) return { type: "num1", prefix: m[0], len: m[0].length, token: m[1] };
+    return null;
+  }
+
+  function matchList(line) {
+    return matchBullet(line) || matchNumber(line);
+  }
+
+  function nextToken(type, token) {
+    if (type === "num1") return String(parseInt(token, 10) + 1);
+    if (type === "num2") {
+      if (token >= "z") return "z";
+      return String.fromCharCode(token.charCodeAt(0) + 1);
+    }
+    return token;
+  }
+
+  // Walk lines above the caret to find the next number/letter to use when a
+  // user nests/un-nests into a numbered list. Falls back to "1"/"a".
+  function findNextNumber(txt, ctx, type) {
+    const flat = getFlatText(txt);
+    const priorBlock = flat.slice(0, Math.max(0, ctx.lineStart - 1));
+    const lines = priorBlock.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (type === "num1") {
+        const m = lines[i].match(NUM1_RE);
+        if (m) return String(parseInt(m[1], 10) + 1);
+      } else {
+        const m = lines[i].match(NUM2_RE);
+        if (m) {
+          const n = String.fromCharCode(m[1].charCodeAt(0) + 1);
+          return n > "z" ? "z" : n;
+        }
+      }
+    }
+    return type === "num1" ? "1" : "a";
+  }
+
+  function writeNumber(type, token) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const prefix = type === "num1" ? `  ${token}.  ` : `      ${token}.  `;
+    const node = document.createTextNode(prefix);
+    range.insertNode(node);
+    const after = document.createRange();
+    after.setStart(node, node.nodeValue.length);
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
+  }
+
+  function writeListItem(kind, token) {
+    if (kind === "black" || kind === "white") writeBullet(kind);
+    else writeNumber(kind, token);
+  }
+
+  // Inserts the bullet prefix at the current caret via Range API, parking the
+  // caret in a *plain* text node after the span so new typing is not styled .wb.
+  function writeBullet(type) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+
+    const frag = document.createDocumentFragment();
+    let caretNode;
+
+    if (type === "white") {
+      frag.appendChild(document.createTextNode("      "));
+      const span = document.createElement("span");
+      span.className = "wb";
+      span.textContent = "○";
+      frag.appendChild(span);
+      caretNode = document.createTextNode("  ");
+      frag.appendChild(caretNode);
+    } else {
+      caretNode = document.createTextNode("  ●  ");
+      frag.appendChild(caretNode);
+    }
+
+    range.insertNode(frag);
+
+    const after = document.createRange();
+    after.setStart(caretNode, caretNode.nodeValue.length);
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
+  }
+
+  function getFlatText(el) {
+    let text = "";
+    (function walk(node) {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) text += child.nodeValue;
+        else if (child.nodeName === "BR") text += "\n";
+        else if (child.nodeType === 1) walk(child);
+      }
+    })(el);
+    return text;
+  }
+
+  function getCaretOffset(el) {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return -1;
+    const range = sel.getRangeAt(0);
+    const container = range.startContainer;
+    if (container !== el && !el.contains(container)) return -1;
+    const pre = document.createRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(container, range.startOffset);
+    const frag = pre.cloneContents();
+    let offset = 0;
+    (function walk(node) {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) offset += child.nodeValue.length;
+        else if (child.nodeName === "BR") offset += 1;
+        else if (child.nodeType === 1) walk(child);
+      }
+    })(frag);
+    return offset;
+  }
+
+  function getLineContext(el) {
+    const flat = getFlatText(el);
+    const off = getCaretOffset(el);
+    if (off < 0) return null;
+    const lineStart = flat.lastIndexOf("\n", off - 1) + 1;
+    const nextNL = flat.indexOf("\n", off);
+    const lineEnd = nextNL === -1 ? flat.length : nextNL;
+    return {
+      off,
+      lineStart,
+      lineEnd,
+      lineBefore: flat.slice(lineStart, off),
+      line: flat.slice(lineStart, lineEnd),
+    };
+  }
+
+  function setCaretAtOffset(el, target) {
+    let remaining = target;
+    let done = false;
+    (function walk(node) {
+      if (done) return;
+      for (const child of node.childNodes) {
+        if (done) return;
+        if (child.nodeType === 3) {
+          const len = child.nodeValue.length;
+          if (remaining <= len) {
+            const r = document.createRange();
+            r.setStart(child, remaining);
+            r.collapse(true);
+            const s = window.getSelection();
+            s.removeAllRanges();
+            s.addRange(r);
+            done = true;
+            return;
+          }
+          remaining -= len;
+        } else if (child.nodeName === "BR") {
+          if (remaining === 0) {
+            const r = document.createRange();
+            r.setStartBefore(child);
+            r.collapse(true);
+            const s = window.getSelection();
+            s.removeAllRanges();
+            s.addRange(r);
+            done = true;
+            return;
+          }
+          remaining -= 1;
+        } else if (child.nodeType === 1) {
+          walk(child);
+        }
+      }
+    })(el);
+    if (!done) {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(false);
+      const s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    }
+  }
+
+  function selectOffsets(el, start, end) {
+    setCaretAtOffset(el, start);
+    const sel = window.getSelection();
+    const a = sel.anchorNode, ao = sel.anchorOffset;
+    setCaretAtOffset(el, end);
+    const b = sel.anchorNode, bo = sel.anchorOffset;
+    const r = document.createRange();
+    r.setStart(a, ao);
+    r.setEnd(b, bo);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+
+  function insertListAtLineStart(txt, kind, token) {
+    txt.focus();
+    const ctx = getLineContext(txt);
+    if (!ctx) { writeListItem(kind, token); return; }
+    const existing = matchList(ctx.line);
+    if (existing) {
+      selectOffsets(txt, ctx.lineStart, ctx.lineStart + existing.len);
+      document.execCommand("delete");
+    } else {
+      setCaretAtOffset(txt, ctx.lineStart);
+    }
+    writeListItem(kind, token);
+  }
+
   // ---------- Keyboard shortcuts ----------
   function handleKey(e, li) {
     // Bold
@@ -339,8 +603,30 @@
       scheduleSave();
       return;
     }
-    // Plain Enter -> newline inside text
-    if (e.key === "Enter") {
+    // Plain Enter -> newline inside text (with list continuation)
+    if (e.key === "Enter" && !e.shiftKey) {
+      const txt = li.querySelector(":scope > .row > .text");
+      const ctx = txt ? getLineContext(txt) : null;
+      const m = ctx ? matchList(ctx.line) : null;
+      if (m) {
+        e.preventDefault();
+        if (ctx.line === m.prefix) {
+          // Empty list item -> remove the prefix
+          selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
+          document.execCommand("delete");
+        } else if (ctx.lineBefore.length >= m.len) {
+          document.execCommand("insertLineBreak");
+          if (m.type === "black" || m.type === "white") {
+            writeBullet(m.type);
+          } else {
+            writeNumber(m.type, nextToken(m.type, m.token));
+          }
+        } else {
+          document.execCommand("insertLineBreak");
+        }
+        scheduleSave();
+        return;
+      }
       e.preventDefault();
       document.execCommand("insertLineBreak");
       scheduleSave();
@@ -348,13 +634,71 @@
     }
     if (e.key === "Tab" && !e.shiftKey) {
       e.preventDefault();
-      addChild(li);
+      const txt = li.querySelector(":scope > .row > .text");
+      const ctx = txt ? getLineContext(txt) : null;
+      const m = ctx ? matchList(ctx.line) : null;
+      if (m && m.type === "black") {
+        // Black bullet -> white (adds 4 more spaces of indent)
+        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
+        document.execCommand("delete");
+        setCaretAtOffset(txt, ctx.lineStart);
+        writeBullet("white");
+      } else if (m && m.type === "num1") {
+        // Numbered 1. -> sub-letter a. (nest)
+        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
+        document.execCommand("delete");
+        setCaretAtOffset(txt, ctx.lineStart);
+        writeNumber("num2", findNextNumber(txt, ctx, "num2"));
+      } else {
+        document.execCommand("insertText", false, "  ");
+      }
       scheduleSave();
       return;
     }
     if (e.key === "Tab" && e.shiftKey) {
       e.preventDefault();
-      toggleCollapse(li);
+      const txt = li.querySelector(":scope > .row > .text");
+      const ctx = txt ? getLineContext(txt) : null;
+      const m = ctx ? matchList(ctx.line) : null;
+      if (m && m.type === "white") {
+        // White bullet -> black (drop 4 spaces of indent)
+        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
+        document.execCommand("delete");
+        setCaretAtOffset(txt, ctx.lineStart);
+        writeBullet("black");
+        scheduleSave();
+        return;
+      }
+      if (m && m.type === "black") {
+        // Black bullet -> remove the prefix
+        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
+        document.execCommand("delete");
+        scheduleSave();
+        return;
+      }
+      if (m && m.type === "num2") {
+        // a. -> 1. (un-nest, continue numbering from above if any)
+        const numTok = findNextNumber(txt, ctx, "num1");
+        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
+        document.execCommand("delete");
+        setCaretAtOffset(txt, ctx.lineStart);
+        writeNumber("num1", numTok);
+        scheduleSave();
+        return;
+      }
+      if (m && m.type === "num1") {
+        // 1. -> remove the prefix
+        selectOffsets(txt, ctx.lineStart, ctx.lineStart + m.len);
+        document.execCommand("delete");
+        scheduleSave();
+        return;
+      }
+      // Non-list line: remove up to 2 leading spaces from the current line
+      if (ctx && ctx.line.startsWith("  ")) {
+        selectOffsets(txt, ctx.lineStart, ctx.lineStart + 2);
+        document.execCommand("delete");
+        scheduleSave();
+      }
       return;
     }
     if (e.key === "Delete" && (e.ctrlKey || e.metaKey)) {
@@ -366,7 +710,7 @@
   }
 
   // ---------- Sanitization ----------
-  const ALLOWED_TAGS = new Set(["B", "STRONG", "I", "EM", "BR"]);
+  const ALLOWED_TAGS = new Set(["B", "STRONG", "I", "EM", "BR", "SPAN"]);
   function sanitizeHTML(html) {
     const div = document.createElement("div");
     div.innerHTML = html;
@@ -376,10 +720,22 @@
           if (!ALLOWED_TAGS.has(child.tagName)) {
             while (child.firstChild) node.insertBefore(child.firstChild, child);
             node.removeChild(child);
-          } else {
-            [...child.attributes].forEach((a) => child.removeAttribute(a.name));
-            walk(child);
+            return;
           }
+          if (child.tagName === "SPAN") {
+            const cls = child.getAttribute("class");
+            [...child.attributes].forEach((a) => child.removeAttribute(a.name));
+            if (cls === "wb") {
+              child.setAttribute("class", "wb");
+              walk(child);
+            } else {
+              while (child.firstChild) node.insertBefore(child.firstChild, child);
+              node.removeChild(child);
+            }
+            return;
+          }
+          [...child.attributes].forEach((a) => child.removeAttribute(a.name));
+          walk(child);
         } else if (child.nodeType !== 3) {
           child.remove();
         }
@@ -439,30 +795,270 @@
     updateEmpty();
   }
 
-  // ---------- Auto-save ----------
-  let saveTimer = null;
-  function scheduleSave() {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(buildState()));
-        flash("Saved");
-      } catch (err) {
-        setStatus("Auto-save failed: " + err.message);
-      }
-    }, 300);
+  // ---------- Project store ----------
+  function uid() {
+    return "p_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
   }
 
-  function restore() {
+  function persistStore() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-        || localStorage.getItem("toc-builder.v1"); // migrate
-      if (!raw) return false;
-      loadState(JSON.parse(raw));
-      return true;
-    } catch {
-      return false;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    } catch (err) {
+      setStatus("Save failed: " + err.message);
     }
+  }
+
+  function getCurrentProject() {
+    return store.projects.find((p) => p.id === store.currentId) || null;
+  }
+
+  function deriveProjectName(data) {
+    const t = (data.title || "").trim();
+    if (t) return t;
+    const firstItem = (data.items && data.items[0]) || null;
+    if (firstItem) {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = firstItem.html || "";
+      const txt = tmp.textContent.trim();
+      if (txt) return txt.slice(0, 60);
+    }
+    return "Untitled";
+  }
+
+  function createProject(seedData) {
+    const now = Date.now();
+    const data = seedData || { title: "", subtitle: "", maxLevels: 10, items: [] };
+    const p = {
+      id: uid(),
+      name: deriveProjectName(data),
+      createdAt: now,
+      updatedAt: now,
+      data,
+    };
+    store.projects.push(p);
+    store.currentId = p.id;
+    persistStore();
+    return p;
+  }
+
+  function switchProject(id) {
+    if (store.currentId === id) return;
+    const p = store.projects.find((x) => x.id === id);
+    if (!p) return;
+    flushSave();
+    store.currentId = id;
+    persistStore();
+    loadState(p.data);
+    renderSidebar();
+    updateActiveTitle();
+  }
+
+  function renameProject(id, name) {
+    const p = store.projects.find((x) => x.id === id);
+    if (!p) return;
+    p.name = name.trim() || "Untitled";
+    p.updatedAt = Date.now();
+    persistStore();
+    renderSidebar();
+    if (p.id === store.currentId) updateActiveTitle();
+  }
+
+  function deleteProject(id) {
+    const idx = store.projects.findIndex((x) => x.id === id);
+    if (idx === -1) return;
+    store.projects.splice(idx, 1);
+    if (store.currentId === id) {
+      if (store.projects.length === 0) {
+        const p = createProject();
+        loadState(p.data);
+      } else {
+        const next = store.projects[Math.min(idx, store.projects.length - 1)];
+        store.currentId = next.id;
+        loadState(next.data);
+      }
+    }
+    persistStore();
+    renderSidebar();
+    updateActiveTitle();
+  }
+
+  function updateActiveTitle() {
+    const p = getCurrentProject();
+    activeProjectName.textContent = p ? p.name : "Plan, outline, present.";
+  }
+
+  // ---------- Auto-save ----------
+  let saveTimer = null;
+  function doSave() {
+    try {
+      const p = getCurrentProject();
+      if (!p) return;
+      p.data = buildState();
+      p.updatedAt = Date.now();
+      const derived = deriveProjectName(p.data);
+      const nameChanged = p.name !== derived;
+      const looksAuto = !p._manualName;
+      if (looksAuto && nameChanged) {
+        p.name = derived;
+        renderSidebar();
+        updateActiveTitle();
+      } else {
+        renderSidebarMeta(p.id);
+      }
+      persistStore();
+      flash("Saved");
+    } catch (err) {
+      setStatus("Auto-save failed: " + err.message);
+    }
+  }
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, 300);
+  }
+  function flushSave() {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      doSave();
+    }
+  }
+  window.addEventListener("beforeunload", flushSave);
+
+  function loadStore() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.projects)) {
+          store = parsed;
+          return true;
+        }
+      }
+    } catch {}
+    // Migrate from legacy single-document key
+    for (const key of LEGACY_KEYS) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        const p = createProject(data);
+        p.name = deriveProjectName(data);
+        persistStore();
+        return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  // ---------- Sidebar rendering ----------
+  function formatTime(ts) {
+    const d = new Date(ts);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    const diff = (now - d) / 86400000;
+    if (diff < 7) {
+      return d.toLocaleDateString([], { weekday: "short" });
+    }
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
+  function renderSidebar() {
+    const q = searchQuery.trim().toLowerCase();
+    const sorted = [...store.projects].sort((a, b) => b.updatedAt - a.updatedAt);
+    const filtered = q ? sorted.filter((p) => p.name.toLowerCase().includes(q)) : sorted;
+    projectListEl.innerHTML = "";
+    if (filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "project-empty";
+      empty.textContent = q ? "No matches." : "No projects yet.";
+      projectListEl.appendChild(empty);
+      return;
+    }
+    filtered.forEach((p) => {
+      projectListEl.appendChild(renderProjectItem(p));
+    });
+  }
+
+  function renderProjectItem(p) {
+    const item = document.createElement("div");
+    item.className = "project-item" + (p.id === store.currentId ? " active" : "");
+    item.dataset.id = p.id;
+
+    const info = document.createElement("div");
+    info.className = "project-info";
+    const name = document.createElement("div");
+    name.className = "project-name";
+    name.textContent = p.name;
+    const meta = document.createElement("div");
+    meta.className = "project-meta";
+    meta.textContent = formatTime(p.updatedAt);
+    info.append(name, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "project-actions";
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "act-rename";
+    renameBtn.title = "Rename";
+    renameBtn.innerHTML = "&#9998;";
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      startRename(item, p);
+    });
+    const delBtn = document.createElement("button");
+    delBtn.className = "act-del";
+    delBtn.title = "Delete";
+    delBtn.innerHTML = "&times;";
+    delBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (confirm("Delete project \"" + p.name + "\"? This cannot be undone.")) {
+        deleteProject(p.id);
+      }
+    });
+    actions.append(renameBtn, delBtn);
+
+    item.append(info, actions);
+    item.addEventListener("click", () => switchProject(p.id));
+    item.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      startRename(item, p);
+    });
+    return item;
+  }
+
+  function startRename(item, p) {
+    const nameEl = item.querySelector(".project-name");
+    if (!nameEl) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "project-name-input";
+    input.value = p.name;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = (save) => {
+      if (save) {
+        p._manualName = true;
+        renameProject(p.id, input.value);
+      } else {
+        renderSidebar();
+      }
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); commit(true); }
+      else if (e.key === "Escape") { e.preventDefault(); commit(false); }
+    });
+    input.addEventListener("blur", () => commit(true));
+    input.addEventListener("click", (e) => e.stopPropagation());
+  }
+
+  function renderSidebarMeta(id) {
+    // Light update of timestamp for a single item without full rerender (cheap path)
+    const el = projectListEl.querySelector('.project-item[data-id="' + id + '"] .project-meta');
+    const p = store.projects.find((x) => x.id === id);
+    if (el && p) el.textContent = formatTime(p.updatedAt);
   }
 
   // ---------- Status ----------
@@ -503,7 +1099,7 @@
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const safe = (data.title || "toc").replace(/[^\w\-]+/g, "_").slice(0, 60) || "toc";
+    const safe = (data.title || "outliner").replace(/[^\w\-]+/g, "_").slice(0, 60) || "outliner";
     a.href = url;
     a.download = safe + ".json";
     a.click();
@@ -516,9 +1112,16 @@
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        loadState(JSON.parse(reader.result));
-        scheduleSave();
-        flash("Loaded");
+        const data = JSON.parse(reader.result);
+        // Load into a brand-new project so we don't overwrite the current one
+        const p = createProject(data);
+        const baseName = file.name.replace(/\.json$/i, "");
+        if (baseName) { p.name = baseName; p._manualName = true; }
+        loadState(p.data);
+        renderSidebar();
+        updateActiveTitle();
+        persistStore();
+        flash("Loaded as new project");
       } catch (err) {
         alert("Invalid JSON: " + err.message);
       }
@@ -536,7 +1139,7 @@
     try {
       const canvas = await html2canvas(paper, { backgroundColor: "#ffffff", scale: 2 });
       const link = document.createElement("a");
-      const safe = (tocTitle.textContent || "toc").replace(/[^\w\-]+/g, "_").slice(0, 60) || "toc";
+      const safe = (tocTitle.textContent || "outliner").replace(/[^\w\-]+/g, "_").slice(0, 60) || "outliner";
       link.download = safe + ".png";
       link.href = canvas.toDataURL("image/png");
       link.click();
@@ -567,10 +1170,67 @@
   tocTitle.addEventListener("input", scheduleSave);
   tocSub.addEventListener("input", scheduleSave);
 
-  // ---------- Init ----------
-  if (!restore()) {
+  // ---------- Sidebar wiring ----------
+  newProjectBtn.addEventListener("click", () => {
+    flushSave();
+    const p = createProject();
+    loadState(p.data);
     root.appendChild(createNode(1));
+    renumber();
+    updateEmpty();
+    renderSidebar();
+    updateActiveTitle();
+    scheduleSave();
+    tocTitle.focus();
+  });
+  const isMobile = () => window.matchMedia("(max-width: 900px)").matches;
+  function setSidebarOpen(open) {
+    sidebar.classList.toggle("collapsed", !open);
+    sidebarBackdrop.classList.toggle("show", open && isMobile());
+    if (!isMobile()) {
+      try { localStorage.setItem("outliner.sidebarCollapsed", open ? "0" : "1"); } catch {}
+    }
+  }
+  sidebarToggle.addEventListener("click", () => {
+    setSidebarOpen(sidebar.classList.contains("collapsed"));
+  });
+  sidebarClose.addEventListener("click", () => setSidebarOpen(false));
+  sidebarBackdrop.addEventListener("click", () => setSidebarOpen(false));
+  window.addEventListener("resize", () => {
+    if (!isMobile()) sidebarBackdrop.classList.remove("show");
+  });
+  projectListEl.addEventListener("click", (e) => {
+    if (e.target.closest(".project-item") && isMobile()) {
+      setSidebarOpen(false);
+    }
+  });
+  projectSearch.addEventListener("input", () => {
+    searchQuery = projectSearch.value;
+    renderSidebar();
+  });
+
+  // ---------- Init ----------
+  loadStore();
+  let current = getCurrentProject();
+  if (!current) {
+    current = createProject();
+  }
+  loadState(current.data);
+  if (root.children.length === 0) {
+    root.appendChild(createNode(1));
+    scheduleSave();
   }
   renumber();
   updateEmpty();
+  renderSidebar();
+  updateActiveTitle();
+  if (isMobile()) {
+    sidebar.classList.add("collapsed");
+  } else {
+    try {
+      if (localStorage.getItem("outliner.sidebarCollapsed") === "1") {
+        sidebar.classList.add("collapsed");
+      }
+    } catch {}
+  }
 })();

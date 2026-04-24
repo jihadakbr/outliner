@@ -14,11 +14,14 @@
 <body>
 
 <header class="topbar">
+  <button class="sidebar-toggle" id="sidebarToggle" title="Toggle projects sidebar" aria-label="Toggle sidebar">
+    <span class="burger"></span>
+  </button>
   <div class="brand">
     <div class="logo">OL</div>
     <div>
       <div class="brand-title">Outliner</div>
-      <div class="brand-sub">Plan, outline, present.</div>
+      <div class="brand-sub" id="activeProjectName">Plan, outline, present.</div>
     </div>
   </div>
 
@@ -48,6 +51,21 @@
   </div>
 </header>
 
+<div class="layout">
+<div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-head">
+    <button class="sidebar-close" id="sidebarClose" title="Close sidebar" aria-label="Close sidebar">&times;</button>
+    <button class="btn btn-primary btn-block" id="newProjectBtn" title="Create a new project">
+      <span class="ico">+</span> New Project
+    </button>
+  </div>
+  <div class="sidebar-search">
+    <input type="text" id="projectSearch" placeholder="Search projects..." />
+  </div>
+  <div class="project-list" id="projectList"></div>
+</aside>
+
 <main class="workspace">
   <div class="paper" id="paper">
     <div class="paper-header">
@@ -60,6 +78,7 @@
     </div>
   </div>
 </main>
+</div>
 
 <div class="statusbar">
   <span id="status">Ready</span>
@@ -67,8 +86,8 @@
   <span class="hint">Shortcuts:
     <kbd>Enter</kbd> new line ·
     <kbd>Ctrl</kbd>+<kbd>Enter</kbd> new item ·
-    <kbd>Tab</kbd> sub-item ·
-    <kbd>Shift</kbd>+<kbd>Tab</kbd> collapse ·
+    <kbd>Tab</kbd> indent (2 spaces) ·
+    <kbd>Shift</kbd>+<kbd>Tab</kbd> outdent ·
     <kbd>Ctrl</kbd>+<kbd>B</kbd> bold ·
     <kbd>Ctrl</kbd>+<kbd>Del</kbd> delete
   </span>
