@@ -471,6 +471,17 @@ li.node.collapsed > .row > .toggle {
   font-family: "SF Mono", Menlo, Consolas, monospace;
 }
 
+li.node[data-plain="true"] > .row > .level-badge {
+  visibility: hidden;
+}
+
+/* Plain text cells visually outdent one level so their text aligns with
+   the parent (numbered) cell's text instead of with their numbered siblings.
+   The nested ul.tree adds 22px padding + 10px margin = 32px per level. */
+ul.tree ul.tree > li.node[data-plain="true"] > .row {
+  margin-left: -32px;
+}
+
 .drag-handle {
   width: 14px;
   flex-shrink: 0;

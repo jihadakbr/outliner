@@ -45,10 +45,11 @@
   let draggedLi = null;
 
   // ---------- Node creation ----------
-  function createNode(level, html = "") {
+  function createNode(level, html = "", plain = false) {
     const li = document.createElement("li");
     li.className = "node";
     li.dataset.level = level;
+    if (plain) li.dataset.plain = "true";
 
     const row = document.createElement("div");
     row.className = "row";
@@ -80,7 +81,7 @@
     txt.className = "text";
     txt.contentEditable = "true";
     txt.spellcheck = false;
-    txt.dataset.placeholder = placeholders[level - 1] || "Level " + level;
+    txt.dataset.placeholder = plain ? "Text" : (placeholders[level - 1] || "Level " + level);
     txt.innerHTML = html;
     updateEmptyClass(txt);
     txt.addEventListener("input", () => { updateEmptyClass(txt); scheduleSave(); });
@@ -93,11 +94,15 @@
       document.execCommand("insertText", false, text);
     });
 
-    // Actions: sibling first (+), then child, bold, delete
+    // Actions: sibling first (+), then child, bold, delete.
+    // Plain text cells skip the Add Item / Add Sub Item buttons since their
+    // numbering semantics are intentionally different.
     const actions = document.createElement("div");
     actions.className = "actions";
-    actions.appendChild(makeActionBtn("btn-sibling", "+", "Add item (Ctrl+Enter)", () => addSibling(li)));
-    actions.appendChild(makeActionBtn("btn-child", "↳", "Add sub-item", () => addChild(li)));
+    if (!plain) {
+      actions.appendChild(makeActionBtn("btn-sibling", "+", "Add item (Ctrl+Enter)", () => addSibling(li)));
+      actions.appendChild(makeActionBtn("btn-child", "↳", "Add sub-item", () => addChild(li)));
+    }
     actions.appendChild(makeActionBtn("btn-bold", "B", "Bold (Ctrl+B)", () => { txt.focus(); document.execCommand("bold"); }));
     actions.appendChild(makeActionBtn("btn-bullet-dash", "-", "Dash bullet (does not nest into hollow)", () => insertListAtLineStart(txt, "dash")));
     actions.appendChild(makeActionBtn("btn-bullet-dark", "●", "Indented bullet (filled)", () => insertListAtLineStart(txt, "black")));
@@ -172,6 +177,48 @@
   function addSiblingAbove(li) {
     const level = parseInt(li.dataset.level, 10);
     const sib = createNode(level);
+    li.before(sib);
+    renumber();
+    focusNode(sib);
+    updateEmpty();
+  }
+
+  // 'b' adds a plain text cell directly below the hovered cell.
+  //   - On a numbered cell: nest as the first child (one level deeper).
+  //   - On a plain text cell: add as the next sibling at the same level
+  //     (so chains of text cells stay aligned and don't drift right).
+  // Falls back to a same-level sibling when already at the maximum depth.
+  function addPlainSibling(li) {
+    const level = parseInt(li.dataset.level, 10);
+    const isPlain = li.dataset.plain === "true";
+    if (isPlain || level >= maxLevels()) {
+      const sib = createNode(level, "", true);
+      li.after(sib);
+      renumber();
+      focusNode(sib);
+      updateEmpty();
+      return;
+    }
+    let childUl = li.querySelector(":scope > ul.tree");
+    if (!childUl) {
+      childUl = document.createElement("ul");
+      childUl.className = "tree";
+      li.appendChild(childUl);
+    }
+    const sib = createNode(level + 1, "", true);
+    childUl.insertBefore(sib, childUl.firstChild);
+    li.classList.remove("collapsed");
+    refreshToggle(li);
+    renumber();
+    focusNode(sib);
+    updateEmpty();
+  }
+
+  // 'a' adds a plain text cell as the previous sibling at the same level as
+  // the hovered cell, so it stays horizontally aligned with the hovered cell.
+  function addPlainSiblingAbove(li) {
+    const level = parseInt(li.dataset.level, 10);
+    const sib = createNode(level, "", true);
     li.before(sib);
     renumber();
     focusNode(sib);
@@ -262,12 +309,24 @@
   // ---------- Outline numbering ----------
   function renumber() {
     function walk(ul, prefix) {
-      [...ul.children].forEach((li, i) => {
-        const num = prefix ? prefix + "." + (i + 1) : String(i + 1);
+      let counter = 0;
+      [...ul.children].forEach((li) => {
+        const isPlain = li.dataset.plain === "true";
         const badge = li.querySelector(":scope > .row > .level-badge");
-        if (badge) badge.textContent = num;
         const child = li.querySelector(":scope > ul.tree");
-        if (child) walk(child, num);
+        if (isPlain) {
+          // Badge is visibility:hidden via CSS, but its width still occupies
+          // space. Set the text to the parent's prefix so the hidden badge
+          // matches the parent's badge width and the plain cell's text lines
+          // up with the parent's text after the -32px outdent.
+          if (badge) badge.textContent = prefix;
+          if (child) walk(child, prefix);
+        } else {
+          counter++;
+          const num = prefix ? prefix + "." + counter : String(counter);
+          if (badge) badge.textContent = num;
+          if (child) walk(child, num);
+        }
       });
     }
     walk(root, "");
@@ -904,6 +963,7 @@
       items.push({
         html: sanitizeHTML(txt.innerHTML),
         collapsed: li.classList.contains("collapsed"),
+        plain: li.dataset.plain === "true" || undefined,
         children: childUl ? serialize(childUl) : [],
       });
     });
@@ -913,7 +973,7 @@
   function deserialize(items, parentUl, level) {
     items.forEach((item) => {
       const html = item.html != null ? item.html : (item.text || "");
-      const li = createNode(level, sanitizeHTML(html));
+      const li = createNode(level, sanitizeHTML(html), !!item.plain);
       parentUl.appendChild(li);
       if (item.children && item.children.length) {
         const ul = document.createElement("ul");
@@ -1393,12 +1453,12 @@
     const k = e.key.toLowerCase();
     if (k === "a") {
       e.preventDefault();
-      addSiblingAbove(hoveredLi);
+      addPlainSiblingAbove(hoveredLi);
       blurActive();
       scheduleSave();
     } else if (k === "b") {
       e.preventDefault();
-      addSibling(hoveredLi);
+      addPlainSibling(hoveredLi);
       blurActive();
       scheduleSave();
     } else if (k === "d") {
