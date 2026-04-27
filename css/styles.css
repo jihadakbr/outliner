@@ -213,11 +213,35 @@ body {
   flex-direction: column;
   overflow: hidden;
   transition: width .18s ease, padding .18s ease;
+  position: relative;
 }
 .sidebar.collapsed {
   width: 0;
   border-right: none;
 }
+.sidebar.resizing {
+  transition: none;
+  user-select: none;
+}
+
+/* Drag handle on the right edge of the sidebar to resize horizontally. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background .15s ease;
+}
+.sidebar-resizer:hover,
+.sidebar.resizing .sidebar-resizer {
+  background: var(--primary, #6366f1);
+  opacity: 0.4;
+}
+.sidebar.collapsed .sidebar-resizer { display: none; }
 .sidebar-head {
   padding: 12px 12px 6px;
   position: relative;

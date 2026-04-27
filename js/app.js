@@ -1428,6 +1428,45 @@
     renderSidebar();
   });
 
+  // ---------- Sidebar resize ----------
+  const SIDEBAR_WIDTH_KEY = "outliner.sidebarWidth";
+  const SIDEBAR_MIN_WIDTH = 180;
+  const SIDEBAR_MAX_WIDTH = 600;
+  const sidebarResizer = document.getElementById("sidebarResizer");
+  try {
+    const stored = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY), 10);
+    if (!isNaN(stored) && stored >= SIDEBAR_MIN_WIDTH && stored <= SIDEBAR_MAX_WIDTH) {
+      sidebar.style.width = stored + "px";
+    }
+  } catch {}
+  if (sidebarResizer) {
+    sidebarResizer.addEventListener("mousedown", (e) => {
+      if (isMobile()) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = sidebar.getBoundingClientRect().width;
+      sidebar.classList.add("resizing");
+      const onMove = (ev) => {
+        const next = Math.min(
+          SIDEBAR_MAX_WIDTH,
+          Math.max(SIDEBAR_MIN_WIDTH, startWidth + (ev.clientX - startX))
+        );
+        sidebar.style.width = next + "px";
+      };
+      const onUp = () => {
+        sidebar.classList.remove("resizing");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        try {
+          const w = Math.round(sidebar.getBoundingClientRect().width);
+          localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
+        } catch {}
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
   // ---------- Hover shortcuts (not in text-edit mode) ----------
   // a = add sibling above, b = add sibling below, dd (double-d) = delete the hovered cell.
   let hoveredLi = null;
