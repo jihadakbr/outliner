@@ -1161,23 +1161,32 @@
   }
 
   // ---------- Sidebar rendering ----------
+  // Full date + time in Jakarta (WIB / Asia/Jakarta) so the user can see
+  // exactly when a project was last edited. Format: "27 Apr 2026, 14:30".
   function formatTime(ts) {
     const d = new Date(ts);
-    const now = new Date();
-    const sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) {
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    }
-    const diff = (now - d) / 86400000;
-    if (diff < 7) {
-      return d.toLocaleDateString([], { weekday: "short" });
-    }
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    return d.toLocaleString("en-GB", {
+      timeZone: "Asia/Jakarta",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
   }
+
+  // Natural, case-insensitive name sort (A-Z, 0-9 like Windows Explorer).
+  const projectCollator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
 
   function renderSidebar() {
     const q = searchQuery.trim().toLowerCase();
-    const sorted = [...store.projects].sort((a, b) => b.updatedAt - a.updatedAt);
+    const sorted = [...store.projects].sort((a, b) =>
+      projectCollator.compare(a.name || "", b.name || "")
+    );
     const filtered = q ? sorted.filter((p) => p.name.toLowerCase().includes(q)) : sorted;
     projectListEl.innerHTML = "";
     if (filtered.length === 0) {
