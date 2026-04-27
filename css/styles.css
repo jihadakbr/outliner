@@ -427,6 +427,7 @@ li.node {
 .row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 4px 6px;
   border-radius: 6px;
@@ -482,6 +483,17 @@ ul.tree ul.tree > li.node[data-plain="true"] > .row {
   margin-left: -32px;
 }
 
+/* Thin top/bottom dividers between plain text cells. Adjacent plain rows
+   share a single line (no doubling) by suppressing the top border when the
+   previous sibling is also a plain row. */
+li.node[data-plain="true"] > .row {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+li.node[data-plain="true"] + li.node[data-plain="true"] > .row {
+  border-top: none;
+}
+
 .drag-handle {
   width: 14px;
   flex-shrink: 0;
@@ -532,7 +544,8 @@ li.node.dragging { opacity: .6; }
   border-radius: 5px;
   outline: none;
   min-width: 240px;
-  max-width: 640px;
+  max-width: 1200px;
+  flex: 1 1 240px;
   font-size: 14px;
   color: var(--text);
   transition: border-color .1s ease, background .1s ease;
@@ -555,16 +568,31 @@ li.node.dragging { opacity: .6; }
 
 /* Inline action buttons - appear right after the text, not at right edge */
 .actions {
-  display: inline-flex;
+  display: none;
   gap: 3px;
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity .1s ease;
-  margin-left: 4px;
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 4px 6px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  white-space: nowrap;
 }
+/* Show actions as a floating popup above the row, centered, on hover or
+   when the row itself is in focus/input mode. */
 .row:hover .actions,
 .row.focused .actions,
-.row:focus-within .actions { opacity: 1; }
+.row:focus-within .actions { display: inline-flex; }
+/* When some cell in the tree is in focus/input mode, suppress the hover
+   popup on OTHER cells (the focused cell still shows its own toolbar). */
+#root:has(.row.focused) .row:not(.focused):hover .actions,
+#root:has(.row:focus-within) .row:not(:focus-within):hover .actions {
+  display: none;
+}
 
 .actions button {
   border: 1px solid var(--border);
