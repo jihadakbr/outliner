@@ -1325,6 +1325,55 @@
     URL.revokeObjectURL(url);
     flash("Exported JSON");
   });
+
+  // Export every project in the store as a single .zip with one JSON per project.
+  document.getElementById("saveAllBtn").addEventListener("click", async () => {
+    if (typeof JSZip === "undefined") {
+      alert("ZIP library not loaded. Check your internet connection.");
+      return;
+    }
+    flushSave();
+    if (!store.projects || store.projects.length === 0) {
+      alert("No projects to export.");
+      return;
+    }
+    setStatus("Building ZIP...");
+    try {
+      const zip = new JSZip();
+      const usedNames = new Set();
+      store.projects.forEach((p) => {
+        const base =
+          (p.name || "").replace(/[^\w\-]+/g, "_").slice(0, 80) || "project";
+        let name = base + ".json";
+        let i = 2;
+        while (usedNames.has(name)) {
+          name = base + "_" + i + ".json";
+          i++;
+        }
+        usedNames.add(name);
+        zip.file(name, JSON.stringify(p.data, null, 2));
+      });
+      const blob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date()
+        .toISOString()
+        .replace(/[:T]/g, "-")
+        .replace(/\..+$/, "");
+      a.href = url;
+      a.download = "outliner_projects_" + stamp + ".zip";
+      a.click();
+      URL.revokeObjectURL(url);
+      flash("Exported " + store.projects.length + " projects as ZIP");
+    } catch (err) {
+      alert("ZIP export failed: " + err.message);
+      setStatus("Ready");
+    }
+  });
   document.getElementById("loadFile").addEventListener("change", (e) => {
     const file = e.target.files[0];
     if (!file) return;
