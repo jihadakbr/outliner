@@ -1709,7 +1709,31 @@
     if (a && typeof a.blur === "function") a.blur();
   }
 
+  // Alt+ArrowUp / Alt+ArrowDown moves the hovered cell up / down within its
+  // current siblings (same nesting level). Works whether or not the cell is
+  // being edited, as long as the mouse is hovering over it.
+  function moveHoveredLi(direction) {
+    if (!hoveredLi || !root.contains(hoveredLi)) return false;
+    const sibling = direction === "up"
+      ? hoveredLi.previousElementSibling
+      : hoveredLi.nextElementSibling;
+    if (!sibling || !sibling.matches("li.node")) return false;
+    if (direction === "up") sibling.before(hoveredLi);
+    else sibling.after(hoveredLi);
+    renumber();
+    scheduleSave();
+    return true;
+  }
   document.addEventListener("keydown", (e) => {
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey &&
+        (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      if (hoveredLi && root.contains(hoveredLi)) {
+        if (moveHoveredLi(e.key === "ArrowUp" ? "up" : "down")) {
+          e.preventDefault();
+        }
+      }
+      return;
+    }
     if (isEditingText()) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (!hoveredLi || !root.contains(hoveredLi)) return;
