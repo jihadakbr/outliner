@@ -22,6 +22,12 @@
   let store = { projects: [], currentId: null };
   let searchQuery = "";
 
+  // Multi-cell selection. Shift+Click extends selection from the anchor
+  // (last clicked / focused cell) to the clicked cell, in document order.
+  // Selected cells get the .cell-selected class on their .row element.
+  const selectedLis = new Set();
+  let selectionAnchor = null;
+
   const placeholders = [
     "Chapter",
     "Section",
@@ -85,7 +91,7 @@
     txt.innerHTML = html;
     updateEmptyClass(txt);
     txt.addEventListener("input", () => { updateEmptyClass(txt); scheduleSave(); });
-    txt.addEventListener("focus", () => row.classList.add("focused"));
+    txt.addEventListener("focus", () => { row.classList.add("focused"); selectionAnchor = li; });
     txt.addEventListener("blur", () => row.classList.remove("focused"));
     txt.addEventListener("keydown", (e) => handleKey(e, li));
     txt.addEventListener("paste", (e) => {
@@ -389,25 +395,42 @@
   }
 
   // ---------- Drag & drop ----------
+  // draggedItems is the canonical list of nodes being dragged (1 or many).
+  // draggedLi is kept for back-compat with code that reads a single dragged
+  // node; it always equals draggedItems[0] when a drag is in progress.
+  let draggedItems = null;
+  function dragInvolvesTarget(target) {
+    if (!draggedItems) return true;
+    return draggedItems.some((d) => d === target || d.contains(target));
+  }
   function wireDragAndDrop(li, row) {
     li.addEventListener("dragstart", (e) => {
       if (!li.draggable) return;
-      draggedLi = li;
+      // If the dragged cell is part of a multi-cell selection, drag the whole
+      // selection (top-level only, so we don't move the same subtree twice).
+      if (selectedLis.has(li) && selectedLis.size > 1) {
+        draggedItems = topLevelSelectedLis();
+      } else {
+        draggedItems = [li];
+      }
+      draggedLi = draggedItems[0];
       e.dataTransfer.effectAllowed = "move";
       try { e.dataTransfer.setData("text/plain", "node"); } catch {}
-      setTimeout(() => li.classList.add("dragging"), 0);
+      const items = draggedItems.slice();
+      setTimeout(() => items.forEach((d) => d.classList.add("dragging")), 0);
     });
     li.addEventListener("dragend", () => {
       li.draggable = false;
-      li.classList.remove("dragging");
+      if (draggedItems) draggedItems.forEach((d) => d.classList.remove("dragging"));
       clearDropIndicators();
+      draggedItems = null;
       draggedLi = null;
     });
 
     row.addEventListener("dragover", (e) => {
-      if (!draggedLi || draggedLi === li || draggedLi.contains(li)) return;
+      if (!draggedItems || dragInvolvesTarget(li)) return;
       const pos = computeDropPosition(row, e.clientY);
-      if (!isDropAllowed(draggedLi, li, pos)) return;
+      if (!isDropAllowed(draggedItems, li, pos)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       setIndicator(row, pos);
@@ -416,11 +439,11 @@
       if (!row.contains(e.relatedTarget)) clearIndicator(row);
     });
     row.addEventListener("drop", (e) => {
-      if (!draggedLi || draggedLi === li || draggedLi.contains(li)) return;
+      if (!draggedItems || dragInvolvesTarget(li)) return;
       const pos = computeDropPosition(row, e.clientY);
-      if (!isDropAllowed(draggedLi, li, pos)) return;
+      if (!isDropAllowed(draggedItems, li, pos)) return;
       e.preventDefault();
-      performDrop(draggedLi, li, pos);
+      performDrop(draggedItems.slice(), li, pos);
       clearDropIndicators();
       scheduleSave();
     });
@@ -436,11 +459,11 @@
   }
 
   function isDropAllowed(dragged, target, pos) {
+    const items = Array.isArray(dragged) ? dragged : [dragged];
     const targetLevel = parseInt(target.dataset.level, 10);
-    const depth = subtreeDepth(dragged);
-    let newRootLevel;
-    if (pos === "inside") newRootLevel = targetLevel + 1;
-    else newRootLevel = targetLevel;
+    const newRootLevel = pos === "inside" ? targetLevel + 1 : targetLevel;
+    // Worst-case subtree depth among all dragged items.
+    const depth = items.reduce((m, d) => Math.max(m, subtreeDepth(d)), 0);
     return (newRootLevel + depth - 1) <= maxLevels();
   }
 
@@ -457,6 +480,7 @@
   }
 
   function performDrop(dragged, target, pos) {
+    const items = Array.isArray(dragged) ? dragged : [dragged];
     const targetLevel = parseInt(target.dataset.level, 10);
     if (pos === "inside") {
       let ul = target.querySelector(":scope > ul.tree");
@@ -465,15 +489,19 @@
         ul.className = "tree";
         target.appendChild(ul);
       }
-      ul.appendChild(dragged);
+      // Prepend (drop "inside" goes to TOP of the section, not the bottom).
+      // Inserting each item before the captured original first child keeps
+      // the items' relative order at the top of the list.
+      const anchor = ul.firstChild;
+      items.forEach((d) => ul.insertBefore(d, anchor));
       target.classList.remove("collapsed");
-      relevel(dragged, targetLevel + 1);
+      items.forEach((d) => relevel(d, targetLevel + 1));
       refreshToggle(target);
     } else {
       const parent = target.parentElement; // ul
-      if (pos === "before") parent.insertBefore(dragged, target);
-      else parent.insertBefore(dragged, target.nextElementSibling);
-      relevel(dragged, targetLevel);
+      const anchor = pos === "before" ? target : target.nextElementSibling;
+      items.forEach((d) => parent.insertBefore(d, anchor));
+      items.forEach((d) => relevel(d, targetLevel));
     }
     // Refresh old parent (source may have become empty)
     // (since we don't track old parent explicitly, just refresh all toggles)
@@ -1094,7 +1122,11 @@
     }
     if (e.key === "Delete" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      removeNode(li);
+      if (selectedLis.has(li) && selectedLis.size > 1) {
+        deleteSelection();
+      } else {
+        removeNode(li);
+      }
       scheduleSave();
       return;
     }
@@ -1760,26 +1792,35 @@
     if (a && typeof a.blur === "function") a.blur();
   }
 
-  // Alt+ArrowUp / Alt+ArrowDown moves the hovered cell up / down within its
-  // current siblings (same nesting level). Works whether or not the cell is
-  // being edited, as long as the mouse is hovering over it.
-  function moveHoveredLi(direction) {
-    if (!hoveredLi || !root.contains(hoveredLi)) return false;
+  // Alt+ArrowUp / Alt+ArrowDown moves the FOCUSED cell up / down within its
+  // current siblings (same nesting level). Focus and caret position are
+  // preserved so the user can press the shortcut repeatedly without leaving
+  // edit mode.
+  function moveFocusedLi(direction) {
+    const active = document.activeElement;
+    if (!active || !active.classList || !active.classList.contains("text")) return false;
+    const li = active.closest("li.node");
+    if (!li || !root.contains(li)) return false;
     const sibling = direction === "up"
-      ? hoveredLi.previousElementSibling
-      : hoveredLi.nextElementSibling;
+      ? li.previousElementSibling
+      : li.nextElementSibling;
     if (!sibling || !sibling.matches("li.node")) return false;
-    if (direction === "up") sibling.before(hoveredLi);
-    else sibling.after(hoveredLi);
+    const caretOff = getCaretOffset(active);
+    if (direction === "up") sibling.before(li);
+    else sibling.after(li);
     renumber();
     scheduleSave();
+    // Reordering with .before/.after keeps the same DOM nodes, but focus and
+    // selection can be cleared by the browser. Restore both explicitly.
+    active.focus();
+    if (caretOff >= 0) setCaretAtOffset(active, caretOff);
     return true;
   }
   document.addEventListener("keydown", (e) => {
     if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey &&
         (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-      if (hoveredLi && root.contains(hoveredLi)) {
-        if (moveHoveredLi(e.key === "ArrowUp" ? "up" : "down")) {
+      if (isEditingText()) {
+        if (moveFocusedLi(e.key === "ArrowUp" ? "up" : "down")) {
           e.preventDefault();
         }
       }
@@ -1804,8 +1845,11 @@
       const now = Date.now();
       if (now - lastDPressAt <= DD_WINDOW_MS) {
         lastDPressAt = 0;
-        const toDelete = hoveredLi;
-        removeNode(toDelete);
+        if (selectedLis.has(hoveredLi) && selectedLis.size > 1) {
+          deleteSelection();
+        } else {
+          removeNode(hoveredLi);
+        }
         blurActive();
         scheduleSave();
       } else {
@@ -1813,6 +1857,175 @@
       }
     } else {
       lastDPressAt = 0;
+    }
+  });
+
+  // ---------- Multi-cell selection (Shift+Click) ----------
+  function getAllLisInOrder() {
+    const result = [];
+    (function walk(ul) {
+      if (!ul) return;
+      for (const child of ul.children) {
+        if (!child.matches || !child.matches("li.node")) continue;
+        result.push(child);
+        const childUl = child.querySelector(":scope > ul.tree");
+        if (childUl) walk(childUl);
+      }
+    })(root);
+    return result;
+  }
+
+  function clearSelection() {
+    selectedLis.forEach((li) => {
+      const row = li.querySelector(":scope > .row");
+      if (row) row.classList.remove("cell-selected");
+    });
+    selectedLis.clear();
+    updateSelectionToolbar();
+  }
+
+  function setSelectedRange(a, b) {
+    clearSelection();
+    if (!a || !b || !root.contains(a) || !root.contains(b)) return;
+    const all = getAllLisInOrder();
+    const ai = all.indexOf(a);
+    const bi = all.indexOf(b);
+    if (ai === -1 || bi === -1) return;
+    const lo = Math.min(ai, bi);
+    const hi = Math.max(ai, bi);
+    for (let i = lo; i <= hi; i++) {
+      selectedLis.add(all[i]);
+      const row = all[i].querySelector(":scope > .row");
+      if (row) row.classList.add("cell-selected");
+    }
+    updateSelectionToolbar();
+  }
+
+  // Returns selected lis with descendants of other selected lis filtered out,
+  // so removeNode/move on the result doesn't double-process the same subtree.
+  function topLevelSelectedLis() {
+    const arr = Array.from(selectedLis);
+    return arr.filter((li) => {
+      for (const other of arr) {
+        if (other !== li && other.contains(li)) return false;
+      }
+      return true;
+    });
+  }
+
+  function deleteSelection() {
+    if (!selectedLis.size) return false;
+    // Pick a focus target near the selection before mutating the DOM.
+    const all = getAllLisInOrder();
+    const indices = Array.from(selectedLis).map((li) => all.indexOf(li)).filter((i) => i !== -1);
+    const after = Math.max(...indices) + 1;
+    const before = Math.min(...indices) - 1;
+    const focusAfter = all[after] || all[before] || null;
+    topLevelSelectedLis().forEach((li) => li.remove());
+    selectedLis.clear();
+    updateSelectionToolbar();
+    renumber();
+    updateEmpty();
+    if (focusAfter && root.contains(focusAfter)) focusNode(focusAfter);
+    selectionAnchor = focusAfter && root.contains(focusAfter) ? focusAfter : null;
+    return true;
+  }
+
+  // Floating drag handle shown when 2+ cells are selected. Positioned at the
+  // vertical middle of the selection block, just to the left of the rows.
+  const selectionHandle = (() => {
+    const el = document.createElement("div");
+    el.id = "selectionHandle";
+    el.className = "selection-handle hidden";
+    el.setAttribute("draggable", "true");
+    el.title = "Drag to move all selected cells";
+    el.innerHTML = "&#x2807;&#x2807;";
+    document.body.appendChild(el);
+
+    el.addEventListener("dragstart", (e) => {
+      if (!selectedLis.size) { e.preventDefault(); return; }
+      draggedItems = topLevelSelectedLis();
+      draggedLi = draggedItems[0] || null;
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", "node"); } catch {}
+      const items = draggedItems.slice();
+      setTimeout(() => items.forEach((d) => d.classList.add("dragging")), 0);
+    });
+    el.addEventListener("dragend", () => {
+      if (draggedItems) draggedItems.forEach((d) => d.classList.remove("dragging"));
+      clearDropIndicators();
+      draggedItems = null;
+      draggedLi = null;
+    });
+    return el;
+  })();
+
+  function updateSelectionToolbar() {
+    if (selectedLis.size < 2) {
+      selectionHandle.classList.add("hidden");
+      return;
+    }
+    // Find first and last selected rows in document order to compute the
+    // vertical span; place the handle at that span's vertical middle and
+    // just to the left of the leftmost selected row.
+    const all = getAllLisInOrder();
+    const ordered = all.filter((li) => selectedLis.has(li));
+    if (!ordered.length) { selectionHandle.classList.add("hidden"); return; }
+    const firstRow = ordered[0].querySelector(":scope > .row");
+    const lastRow = ordered[ordered.length - 1].querySelector(":scope > .row");
+    if (!firstRow || !lastRow) { selectionHandle.classList.add("hidden"); return; }
+    const fr = firstRow.getBoundingClientRect();
+    const lr = lastRow.getBoundingClientRect();
+    let leftMost = fr.left;
+    ordered.forEach((li) => {
+      const r = li.querySelector(":scope > .row");
+      if (r) leftMost = Math.min(leftMost, r.getBoundingClientRect().left);
+    });
+    const cy = (fr.top + lr.bottom) / 2;
+    selectionHandle.classList.remove("hidden");
+    selectionHandle.style.top = cy + "px";
+    selectionHandle.style.left = (leftMost - 24) + "px";
+  }
+  // Reposition on scroll / resize so the handle stays anchored to the cells.
+  window.addEventListener("scroll", () => updateSelectionToolbar(), true);
+  window.addEventListener("resize", () => updateSelectionToolbar());
+
+  // Shift+Click on a cell (anywhere in the row) selects the range from the
+  // anchor (last interacted cell) to the clicked cell. We hook mousedown so
+  // the browser does not place a caret or start a text-selection drag.
+  root.addEventListener("mousedown", (e) => {
+    if (!e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const li = e.target.closest("li.node");
+    if (!li || !root.contains(li)) return;
+    // Don't hijack shift+click on action buttons / drag handle / toggle.
+    if (e.target.closest(".actions, .drag-handle, .toggle")) return;
+    e.preventDefault();
+    blurActive();
+    const anchor = (selectionAnchor && root.contains(selectionAnchor)) ? selectionAnchor : li;
+    setSelectedRange(anchor, li);
+  });
+
+  // Plain click on a cell updates the anchor and clears any prior selection
+  // so the user has a clear "start" for the next shift+click.
+  root.addEventListener("click", (e) => {
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const li = e.target.closest("li.node");
+    if (!li || !root.contains(li)) return;
+    if (e.target.closest(".actions, .drag-handle, .toggle")) return;
+    if (selectedLis.size) clearSelection();
+    selectionAnchor = li;
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && selectedLis.size) {
+      clearSelection();
+      e.preventDefault();
+      return;
+    }
+    if (selectedLis.size && (e.key === "Delete" || e.key === "Backspace") && !isEditingText()) {
+      e.preventDefault();
+      deleteSelection();
+      scheduleSave();
     }
   });
 

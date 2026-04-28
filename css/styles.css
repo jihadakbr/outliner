@@ -460,6 +460,32 @@ li.node {
 }
 .row:hover { background: var(--surface-2); }
 .row.focused { background: var(--primary-soft); }
+.row.cell-selected {
+  background: var(--primary-soft);
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+/* Floating drag handle for moving a multi-cell selection as a group. */
+.selection-handle {
+  position: fixed;
+  transform: translateY(-50%);
+  cursor: grab;
+  color: var(--primary);
+  font-size: 16px;
+  letter-spacing: -3px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  z-index: 50;
+  user-select: none;
+  line-height: 1;
+}
+.selection-handle:hover { background: var(--primary-soft); }
+.selection-handle:active { cursor: grabbing; }
+.selection-handle.hidden { display: none; }
 
 .toggle {
   width: 18px;
