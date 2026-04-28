@@ -447,20 +447,35 @@
   }
 
   // ---------- Bullet helpers ----------
-  // Black bullet: "  ●  " (indent 2)
-  // White bullet: "      ○  " (indent 6 = black's 2 + nesting stride 4).
-  // ○ wrapped in <span class="wb"> so it can be shrunk to match ● visually.
-  const BLACK_PREFIX = "  ●  ";        // 5 chars in flat text
-  const WHITE_PREFIX = "      ○  ";    // 9 chars in flat text
+  // Bullet nesting chain: each level adds 4 spaces of indent over the previous.
+  // Tab on a bullet advances to the next entry; Shift+Tab regresses.
+  // The hollow (white) glyph is wrapped in <span class="wb"> so CSS can shrink
+  // it to visually match the filled glyphs.
+  const BULLET_CHAIN = ["black", "white", "diamond", "square", "triangle", "trianglev"];
+  const BULLET_DEFS = {
+    black:     { char: "●", indent: 2 },   // ●
+    white:     { char: "○", indent: 6 },   // ○
+    diamond:   { char: "◆", indent: 10 },  // ◆
+    square:    { char: "■", indent: 14 },  // ■
+    triangle:  { char: "▲", indent: 18 },  // ▲
+    trianglev: { char: "▼", indent: 22 },  // ▼
+  };
+  const DEEPEST_BULLET = BULLET_CHAIN[BULLET_CHAIN.length - 1];
+  function bulletPrefix(type) {
+    const def = BULLET_DEFS[type];
+    return " ".repeat(def.indent) + def.char + "  ";
+  }
   const DASH_PREFIX  = "  -  ";        // initial dash (indent = 2); extra "  " pairs may precede
-  const BLACK_LEN = 5;
-  const WHITE_LEN = 9;
   // Dash line: any 2-space pairs of indent (>=1), then "-  ". Indent grows/shrinks via Tab / Shift+Tab.
   const DASH_RE = /^((?:  )+)-  /;
 
   function matchBullet(line) {
-    if (line.startsWith(WHITE_PREFIX)) return { type: "white", prefix: WHITE_PREFIX, len: WHITE_LEN };
-    if (line.startsWith(BLACK_PREFIX)) return { type: "black", prefix: BLACK_PREFIX, len: BLACK_LEN };
+    // Walk deepest -> shallowest so nested prefixes match before their roots.
+    for (let i = BULLET_CHAIN.length - 1; i >= 0; i--) {
+      const type = BULLET_CHAIN[i];
+      const prefix = bulletPrefix(type);
+      if (line.startsWith(prefix)) return { type, prefix, len: prefix.length };
+    }
     const dm = line.match(DASH_RE);
     if (dm) return { type: "dash", prefix: dm[0], len: dm[0].length, indent: dm[1].length };
     return null;
@@ -520,19 +535,26 @@
   }
 
   function writeListItem(kind, token) {
-    if (kind === "black" || kind === "white" || kind === "dash") writeBullet(kind);
+    if (kind === "dash" || BULLET_DEFS[kind]) writeBullet(kind);
     else writeNumber(kind, token);
   }
 
-  // Inserts the bullet prefix via execCommand("insertText") so native undo/redo
-  // treats the whole prefix as one atomic entry. insertHTML with nested spans
-  // produced partial/ghost undo states, so ○ is inserted as plain text here.
+  // Inserts the bullet prefix via execCommand. For white bullets we use
+  // insertHTML so the ○ is wrapped in <span class="wb">○</span>, which the
+  // CSS scales down to visually match the filled ● glyph.
   function writeBullet(type, customPrefix) {
-    let prefix;
-    if (type === "white") prefix = "      ○  ";
-    else if (type === "dash") prefix = customPrefix || "  -  ";
-    else prefix = "  ●  ";
-    document.execCommand("insertText", false, prefix);
+    if (type === "dash") {
+      document.execCommand("insertText", false, customPrefix || "  -  ");
+      return;
+    }
+    const def = BULLET_DEFS[type];
+    if (!def) return;
+    const indent = " ".repeat(def.indent);
+    if (type === "white") {
+      document.execCommand("insertHTML", false, `${indent}<span class="wb">${def.char}</span>  `);
+    } else {
+      document.execCommand("insertText", false, `${indent}${def.char}  `);
+    }
   }
 
   function getFlatText(el) {
@@ -724,13 +746,19 @@
     if (m && m.type === "dash") {
       setCaretAtOffset(txt, ln.start);
       document.execCommand("insertText", false, "  ");
-    } else if (m && m.type === "black") {
-      selectOffsets(txt, ln.start, ln.start + m.len);
-      writeBullet("white");
+    } else if (m && BULLET_DEFS[m.type]) {
+      const idx = BULLET_CHAIN.indexOf(m.type);
+      if (idx < BULLET_CHAIN.length - 1) {
+        selectOffsets(txt, ln.start, ln.start + m.len);
+        writeBullet(BULLET_CHAIN[idx + 1]);
+      } else {
+        // Already at deepest bullet level; no further nesting.
+        return;
+      }
     } else if (m && m.type === "num1") {
       selectOffsets(txt, ln.start, ln.start + m.len);
       writeNumber("num2", "a");
-    } else if (m && (m.type === "white" || m.type === "num2")) {
+    } else if (m && m.type === "num2") {
       // Already at max nest in its chain; no-op for multi-line indent.
       return;
     } else {
@@ -750,12 +778,14 @@
         selectOffsets(txt, ln.start, ln.start + m.len);
         document.execCommand("delete");
       }
-    } else if (m && m.type === "white") {
+    } else if (m && BULLET_DEFS[m.type]) {
+      const idx = BULLET_CHAIN.indexOf(m.type);
       selectOffsets(txt, ln.start, ln.start + m.len);
-      writeBullet("black");
-    } else if (m && m.type === "black") {
-      selectOffsets(txt, ln.start, ln.start + m.len);
-      document.execCommand("delete");
+      if (idx > 0) {
+        writeBullet(BULLET_CHAIN[idx - 1]);
+      } else {
+        document.execCommand("delete");
+      }
     } else if (m && m.type === "num2") {
       selectOffsets(txt, ln.start, ln.start + m.len);
       writeNumber("num1", "1");
@@ -835,7 +865,7 @@
           document.execCommand("insertLineBreak");
           if (m.type === "dash") {
             writeBullet("dash", m.prefix);
-          } else if (m.type === "black" || m.type === "white") {
+          } else if (BULLET_DEFS[m.type]) {
             writeBullet(m.type);
           } else {
             writeNumber(m.type, nextToken(m.type, m.token));
@@ -896,7 +926,8 @@
         outdentLine(txt, ln);
       } else {
         const m = matchList(ln.text);
-        if (!m || m.type === "white" || m.type === "num2") {
+        const atMaxBullet = m && m.type === DEEPEST_BULLET;
+        if (!m || atMaxBullet || m.type === "num2") {
           // Non-list line or already-max-nested prefix: insert 2 spaces at the current caret.
           document.execCommand("insertText", false, "  ");
         } else if (m.type === "num1") {
@@ -951,7 +982,36 @@
       });
     }
     walk(div);
+    wrapWhiteBullets(div);
     return div.innerHTML;
+  }
+
+  // Wrap any bare ○ text in <span class="wb">○</span> so the CSS size-match rule
+  // applies to content that arrived without the wrapper (legacy saves, paste, etc.).
+  function wrapWhiteBullets(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    const targets = [];
+    let n;
+    while ((n = walker.nextNode())) {
+      if (n.nodeValue.indexOf("○") === -1) continue;
+      if (n.parentNode && n.parentNode.tagName === "SPAN" &&
+          n.parentNode.getAttribute("class") === "wb") continue;
+      targets.push(n);
+    }
+    targets.forEach((node) => {
+      const parts = node.nodeValue.split("○");
+      const frag = document.createDocumentFragment();
+      parts.forEach((part, i) => {
+        if (part) frag.appendChild(document.createTextNode(part));
+        if (i < parts.length - 1) {
+          const span = document.createElement("span");
+          span.setAttribute("class", "wb");
+          span.textContent = "○";
+          frag.appendChild(span);
+        }
+      });
+      node.parentNode.replaceChild(frag, node);
+    });
   }
 
   // ---------- Serialization ----------
