@@ -673,22 +673,44 @@
     }
     return rangeProbeRect(probe);
   }
+  // Returns a rect spanning the first or last actual character inside `el`.
+  // Using a 1-char range gives a reliable y-position; collapsed ranges at
+  // element boundaries often return zero rects (especially in nested cells).
+  function boundaryCharRect(el, atStart) {
+    let target = null;
+    (function walk(node) {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3 && child.nodeValue.length > 0) {
+          if (atStart && !target) target = child;
+          else if (!atStart) target = child;
+        } else if (child.nodeType === 1) {
+          walk(child);
+        }
+      }
+    })(el);
+    if (!target) return el.getBoundingClientRect();
+    const r = document.createRange();
+    if (atStart) {
+      r.setStart(target, 0);
+      r.setEnd(target, 1);
+    } else {
+      const len = target.nodeValue.length;
+      r.setStart(target, len - 1);
+      r.setEnd(target, len);
+    }
+    return rangeProbeRect(r) || el.getBoundingClientRect();
+  }
+
   function isCaretOnFirstVisualLine(el) {
     // Textual short-circuit: if there is a \n before the caret, we are past
-    // the first text line, so definitely not on the first visual line. This
-    // is reliable; the rect check below can return degenerate (zero) rects
-    // at certain caret positions in some browsers and would falsely report
-    // "on first line", causing arrow keys to jump out of multi-line cells.
+    // the first text line, so definitely not on the first visual line.
     const flat = getFlatText(el);
     const off = getCaretOffset(el);
     if (off > 0 && flat.lastIndexOf("\n", off - 1) !== -1) return false;
-    // We are on the first text line; refine using rects to catch soft-wrap.
+    // First text line; refine via rects to also catch soft-wrap.
     const cr = caretRect();
     if (!cr || !cr.height) return true;
-    const start = document.createRange();
-    start.selectNodeContents(el);
-    start.collapse(true);
-    const sr = rangeProbeRect(start);
+    const sr = boundaryCharRect(el, true);
     if (!sr || !sr.height) return true;
     return cr.top <= sr.top + 2;
   }
@@ -698,10 +720,7 @@
     if (off >= 0 && flat.indexOf("\n", off) !== -1) return false;
     const cr = caretRect();
     if (!cr || !cr.height) return true;
-    const end = document.createRange();
-    end.selectNodeContents(el);
-    end.collapse(false);
-    const er = rangeProbeRect(end);
+    const er = boundaryCharRect(el, false);
     if (!er || !er.height) return true;
     return cr.bottom >= er.bottom - 2;
   }
