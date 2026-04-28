@@ -666,6 +666,10 @@ li.node.dragging { opacity: .6; }
 .text .wb {
   font-size: 0.62em;
 }
+/* Square bullet inside .text - scale down ■ so it matches ● visually */
+.text .sq {
+  font-size: 0.7em;
+}
 .btn-del:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
 
 .actions button:disabled {

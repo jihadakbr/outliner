@@ -136,8 +136,43 @@
     b.innerHTML = label;
     b.title = title;
     b.tabIndex = -1;
-    b.addEventListener("mousedown", (e) => e.preventDefault());
-    b.addEventListener("click", () => { handler(); scheduleSave(); });
+    // Capture the active selection on mousedown (when focus is still on the
+    // editable text) so we can restore it on click. preventDefault stops the
+    // button from stealing focus, but some browsers/race conditions still
+    // collapse or drop the selection by the time click fires, which made
+    // execCommand-based actions like bullets work intermittently.
+    let savedRange = null;
+    let savedTarget = null;
+    b.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const sel = window.getSelection();
+      savedRange = null;
+      savedTarget = null;
+      if (sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        const sc = r.startContainer;
+        const host = (sc.nodeType === 1 ? sc : sc.parentElement);
+        const editable = host && host.closest && host.closest(".text");
+        if (editable) {
+          savedRange = r.cloneRange();
+          savedTarget = editable;
+        }
+      }
+    });
+    b.addEventListener("click", () => {
+      if (savedTarget && document.body.contains(savedTarget)) {
+        savedTarget.focus();
+        if (savedRange) {
+          try {
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(savedRange);
+          } catch (_) { /* range may have been invalidated by DOM mutation */ }
+        }
+      }
+      handler();
+      scheduleSave();
+    });
     return b;
   }
 
@@ -449,16 +484,16 @@
   // ---------- Bullet helpers ----------
   // Bullet nesting chain: each level adds 4 spaces of indent over the previous.
   // Tab on a bullet advances to the next entry; Shift+Tab regresses.
-  // The hollow (white) glyph is wrapped in <span class="wb"> so CSS can shrink
-  // it to visually match the filled glyphs.
+  // Glyphs whose default rendering looks too large next to ● are wrapped in a
+  // span (`wb` for ○, `sq` for ■) so CSS can shrink them to match visually.
   const BULLET_CHAIN = ["black", "white", "diamond", "square", "triangle", "trianglev"];
   const BULLET_DEFS = {
-    black:     { char: "●", indent: 2 },   // ●
-    white:     { char: "○", indent: 6 },   // ○
-    diamond:   { char: "◆", indent: 10 },  // ◆
-    square:    { char: "■", indent: 14 },  // ■
-    triangle:  { char: "▲", indent: 18 },  // ▲
-    trianglev: { char: "▼", indent: 22 },  // ▼
+    black:     { char: "●", indent: 2 },                // ●
+    white:     { char: "○", indent: 6,  cls: "wb" },    // ○ scaled via .wb
+    diamond:   { char: "◆", indent: 10 },               // ◆
+    square:    { char: "■", indent: 14, cls: "sq" },    // ■ scaled via .sq
+    triangle:  { char: "▲", indent: 18 },               // ▲
+    trianglev: { char: "▼", indent: 22 },               // ▼
   };
   const DEEPEST_BULLET = BULLET_CHAIN[BULLET_CHAIN.length - 1];
   function bulletPrefix(type) {
@@ -539,9 +574,9 @@
     else writeNumber(kind, token);
   }
 
-  // Inserts the bullet prefix via execCommand. For white bullets we use
-  // insertHTML so the ○ is wrapped in <span class="wb">○</span>, which the
-  // CSS scales down to visually match the filled ● glyph.
+  // Inserts the bullet prefix via execCommand. Glyphs that need visual
+  // size correction are wrapped in a span with the def's `cls` so CSS can
+  // scale them to match the filled ● glyph.
   function writeBullet(type, customPrefix) {
     if (type === "dash") {
       document.execCommand("insertText", false, customPrefix || "  -  ");
@@ -550,8 +585,8 @@
     const def = BULLET_DEFS[type];
     if (!def) return;
     const indent = " ".repeat(def.indent);
-    if (type === "white") {
-      document.execCommand("insertHTML", false, `${indent}<span class="wb">${def.char}</span>  `);
+    if (def.cls) {
+      document.execCommand("insertHTML", false, `${indent}<span class="${def.cls}">${def.char}</span>  `);
     } else {
       document.execCommand("insertText", false, `${indent}${def.char}  `);
     }
@@ -730,10 +765,17 @@
   }
 
   function insertListAtLineStart(txt, kind, token) {
-    txt.focus();
-    const offs = getSelectionOffsets(txt);
+    // Ensure this cell's text is the focused element with a selection inside
+    // it. If the saved selection (from the button's mousedown) is in a
+    // different cell, or if focus drifted, force the caret into THIS cell so
+    // the subsequent execCommand operates on the right element.
+    if (document.activeElement !== txt) txt.focus();
+    let offs = getSelectionOffsets(txt);
     const flat = getFlatText(txt);
-    if (!offs) { writeListItem(kind, token); return; }
+    if (!offs) {
+      setCaretAtOffset(txt, flat.length);
+      offs = { start: flat.length, end: flat.length };
+    }
 
     const firstLineStart = flat.lastIndexOf("\n", offs.start - 1) + 1;
     const nlAfterEnd = flat.indexOf("\n", Math.max(offs.end - 1, firstLineStart));
@@ -1011,8 +1053,8 @@
           if (child.tagName === "SPAN") {
             const cls = child.getAttribute("class");
             [...child.attributes].forEach((a) => child.removeAttribute(a.name));
-            if (cls === "wb") {
-              child.setAttribute("class", "wb");
+            if (cls === "wb" || cls === "sq") {
+              child.setAttribute("class", cls);
               walk(child);
             } else {
               while (child.firstChild) node.insertBefore(child.firstChild, child);
@@ -1028,35 +1070,41 @@
       });
     }
     walk(div);
-    wrapWhiteBullets(div);
+    wrapScaledGlyphs(div);
     return div.innerHTML;
   }
 
-  // Wrap any bare ○ text in <span class="wb">○</span> so the CSS size-match rule
-  // applies to content that arrived without the wrapper (legacy saves, paste, etc.).
-  function wrapWhiteBullets(root) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-    const targets = [];
-    let n;
-    while ((n = walker.nextNode())) {
-      if (n.nodeValue.indexOf("○") === -1) continue;
-      if (n.parentNode && n.parentNode.tagName === "SPAN" &&
-          n.parentNode.getAttribute("class") === "wb") continue;
-      targets.push(n);
-    }
-    targets.forEach((node) => {
-      const parts = node.nodeValue.split("○");
-      const frag = document.createDocumentFragment();
-      parts.forEach((part, i) => {
-        if (part) frag.appendChild(document.createTextNode(part));
-        if (i < parts.length - 1) {
-          const span = document.createElement("span");
-          span.setAttribute("class", "wb");
-          span.textContent = "○";
-          frag.appendChild(span);
-        }
+  // Wrap any bare ○ / ■ text in their scaling spans so the CSS size-match rules
+  // apply to content that arrived without the wrapper (legacy saves, paste, etc.).
+  const SCALED_GLYPHS = [
+    { char: "○", cls: "wb" },
+    { char: "■", cls: "sq" },
+  ];
+  function wrapScaledGlyphs(root) {
+    SCALED_GLYPHS.forEach(({ char, cls }) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+      const targets = [];
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.nodeValue.indexOf(char) === -1) continue;
+        if (n.parentNode && n.parentNode.tagName === "SPAN" &&
+            n.parentNode.getAttribute("class") === cls) continue;
+        targets.push(n);
+      }
+      targets.forEach((node) => {
+        const parts = node.nodeValue.split(char);
+        const frag = document.createDocumentFragment();
+        parts.forEach((part, i) => {
+          if (part) frag.appendChild(document.createTextNode(part));
+          if (i < parts.length - 1) {
+            const span = document.createElement("span");
+            span.setAttribute("class", cls);
+            span.textContent = char;
+            frag.appendChild(span);
+          }
+        });
+        node.parentNode.replaceChild(frag, node);
       });
-      node.parentNode.replaceChild(frag, node);
     });
   }
 
