@@ -96,8 +96,14 @@
     txt.addEventListener("keydown", (e) => handleKey(e, li));
     txt.addEventListener("paste", (e) => {
       e.preventDefault();
-      const text = (e.clipboardData || window.clipboardData).getData("text");
-      document.execCommand("insertText", false, text);
+      const text = (e.clipboardData || window.clipboardData).getData("text") || "";
+      // Strip rich formatting and normalize line breaks to <br>. Inserting via
+      // execCommand("insertText") with embedded \n causes Chrome to wrap each
+      // line in a <div>, which our list/bullet logic does not treat as a line
+      // boundary; using <br> matches what Enter produces in this editor.
+      const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const html = text.replace(/\r\n/g, "\n").split("\n").map(esc).join("<br>");
+      document.execCommand("insertHTML", false, html);
     });
 
     // Actions: sibling first (+), then child, bold, delete.
@@ -1134,6 +1140,10 @@
 
   // ---------- Sanitization ----------
   const ALLOWED_TAGS = new Set(["B", "STRONG", "I", "EM", "BR", "SPAN"]);
+  // Block-level elements that are not allowed but should leave a line break
+  // behind when stripped (so pasted multi-line content keeps its line breaks
+  // even though we collapse the visual structure).
+  const BLOCK_BREAK_TAGS = new Set(["DIV", "P", "LI", "TR", "BLOCKQUOTE", "PRE"]);
   function sanitizeHTML(html) {
     const div = document.createElement("div");
     div.innerHTML = html;
@@ -1141,6 +1151,16 @@
       [...node.childNodes].forEach((child) => {
         if (child.nodeType === 1) {
           if (!ALLOWED_TAGS.has(child.tagName)) {
+            // For block-level wrappers we replace the boundary with a <br>
+            // so multi-line pasted content does not collapse onto one line.
+            const needsBreak =
+              BLOCK_BREAK_TAGS.has(child.tagName) &&
+              child.previousSibling &&
+              !(child.previousSibling.nodeType === 1 &&
+                child.previousSibling.nodeName === "BR");
+            if (needsBreak) {
+              node.insertBefore(document.createElement("br"), child);
+            }
             while (child.firstChild) node.insertBefore(child.firstChild, child);
             node.removeChild(child);
             return;
