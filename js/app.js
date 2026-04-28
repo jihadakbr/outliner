@@ -631,15 +631,47 @@
   // caret is on that visual line. Works for both manual \n and soft-wrap.
   function rangeProbeRect(range) {
     let rect = range.getBoundingClientRect();
-    if (rect && (rect.height || rect.width || rect.top || rect.bottom)) return rect;
+    if (rect && rect.height) return rect;
     const rects = range.getClientRects();
-    if (rects && rects.length) return rects[0];
+    if (rects && rects.length && rects[0].height) return rects[0];
     return null;
   }
+  // Robust caret rect: getBoundingClientRect on a collapsed Range often returns
+  // a zero rect in Chromium/WebKit, especially at text-node boundaries. To get
+  // a stable y-position, we expand the range by 1 character (forward, or
+  // backward at end-of-text) and use that rect's top/bottom.
   function caretRect() {
     const sel = window.getSelection();
     if (!sel.rangeCount) return null;
-    return rangeProbeRect(sel.getRangeAt(0));
+    const range = sel.getRangeAt(0);
+    const direct = rangeProbeRect(range);
+    if (direct) return direct;
+    const probe = range.cloneRange();
+    let c = probe.startContainer;
+    let off = probe.startOffset;
+    if (c.nodeType === 1) {
+      // Element container: descend into a child text node if possible.
+      const child = c.childNodes[off] || c.childNodes[off - 1];
+      if (child && child.nodeType === 3 && child.nodeValue.length > 0) {
+        probe.setStart(child, 0);
+        probe.setEnd(child, Math.min(1, child.nodeValue.length));
+      } else if (child && child.nodeType === 1) {
+        probe.selectNode(child);
+      } else {
+        return null;
+      }
+    } else if (c.nodeType === 3) {
+      if (off < c.nodeValue.length) {
+        probe.setEnd(c, off + 1);
+      } else if (off > 0) {
+        probe.setStart(c, off - 1);
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
+    return rangeProbeRect(probe);
   }
   function isCaretOnFirstVisualLine(el) {
     // Textual short-circuit: if there is a \n before the caret, we are past
