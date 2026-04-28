@@ -917,7 +917,10 @@
   }
 
   // Indent/outdent logic for a single line (used by Tab / Shift+Tab, per-line in multi-line selections).
-  function indentLine(txt, ln) {
+  // seqIdx (optional) is the 0-based position of this line within a multi-line
+  // batch, restricted to lines of the same convertible type. It controls the
+  // sequential token used when converting num1 -> num2 ("a", "b", "c", ...).
+  function indentLine(txt, ln, seqIdx) {
     const m = matchList(ln.text);
     if (m && m.type === "dash") {
       setCaretAtOffset(txt, ln.start);
@@ -933,7 +936,10 @@
       }
     } else if (m && m.type === "num1") {
       selectOffsets(txt, ln.start, ln.start + m.len);
-      writeNumber("num2", "a");
+      const base = "a".charCodeAt(0);
+      const cap = "z".charCodeAt(0);
+      const tok = String.fromCharCode(Math.min(base + (seqIdx || 0), cap));
+      writeNumber("num2", tok);
     } else if (m && m.type === "num2") {
       // Already at max nest in its chain; no-op for multi-line indent.
       return;
@@ -944,7 +950,9 @@
     }
   }
 
-  function outdentLine(txt, ln) {
+  // seqIdx (optional) is used when converting num2 -> num1 across a batch so
+  // each line gets a sequential number ("1", "2", "3", ...).
+  function outdentLine(txt, ln, seqIdx) {
     const m = matchList(ln.text);
     if (m && m.type === "dash") {
       if (m.indent > 2) {
@@ -964,7 +972,7 @@
       }
     } else if (m && m.type === "num2") {
       selectOffsets(txt, ln.start, ln.start + m.len);
-      writeNumber("num1", "1");
+      writeNumber("num1", String(1 + (seqIdx || 0)));
     } else if (m && m.type === "num1") {
       selectOffsets(txt, ln.start, ln.start + m.len);
       document.execCommand("delete");
@@ -1090,10 +1098,20 @@
           if (nl === -1 || lineEnd >= lastLineEnd) break;
           p = nl + 1;
         }
+        // Pre-compute per-line sequence indices, top-down, so that converting
+        // num1 -> num2 produces "a", "b", "c", ... and num2 -> num1 produces
+        // "1", "2", "3", ... instead of repeating the same token.
+        const seqIdx = new Array(lines.length);
+        let n1i = 0, n2i = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const m = matchList(lines[i].text);
+          if (m && m.type === "num1") seqIdx[i] = n1i++;
+          else if (m && m.type === "num2") seqIdx[i] = n2i++;
+        }
         // Bottom-up so offsets above stay valid after each mutation.
         for (let i = lines.length - 1; i >= 0; i--) {
-          if (e.shiftKey) outdentLine(txt, lines[i]);
-          else indentLine(txt, lines[i]);
+          if (e.shiftKey) outdentLine(txt, lines[i], seqIdx[i]);
+          else indentLine(txt, lines[i], seqIdx[i]);
         }
         scheduleSave();
         return;
