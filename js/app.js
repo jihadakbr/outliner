@@ -590,6 +590,43 @@
     return offset;
   }
 
+  // Caret-on-first/last-visual-line probes. We measure the caret rect and the
+  // rect of a collapsed range at the very start (or end) of the cell. If they
+  // share roughly the same vertical position (within a couple of pixels), the
+  // caret is on that visual line. Works for both manual \n and soft-wrap.
+  function rangeProbeRect(range) {
+    let rect = range.getBoundingClientRect();
+    if (rect && (rect.height || rect.width || rect.top || rect.bottom)) return rect;
+    const rects = range.getClientRects();
+    if (rects && rects.length) return rects[0];
+    return null;
+  }
+  function caretRect() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    return rangeProbeRect(sel.getRangeAt(0));
+  }
+  function isCaretOnFirstVisualLine(el) {
+    const cr = caretRect();
+    if (!cr) return true;
+    const start = document.createRange();
+    start.selectNodeContents(el);
+    start.collapse(true);
+    const sr = rangeProbeRect(start);
+    if (!sr) return true;
+    return cr.top <= sr.top + 2;
+  }
+  function isCaretOnLastVisualLine(el) {
+    const cr = caretRect();
+    if (!cr) return true;
+    const end = document.createRange();
+    end.selectNodeContents(el);
+    end.collapse(false);
+    const er = rangeProbeRect(end);
+    if (!er) return true;
+    return cr.bottom >= er.bottom - 2;
+  }
+
   function getLineContext(el) {
     const flat = getFlatText(el);
     const off = getCaretOffset(el);
@@ -823,15 +860,13 @@
     }
     // Arrow Up/Down -> move caret to prev/next cell in document order
     // ArrowUp/Down only crosses cells when the caret is on the first / last
-    // textual line of this cell. Otherwise let the browser move the caret
-    // within the cell as normal multi-line editing.
+    // VISUAL line of this cell. Visual line accounts for both manual line
+    // breaks (\n) and soft-wrapped long text, so the textual-line check alone
+    // is not enough. We compare the caret's bounding rect against the rects of
+    // ranges placed at the very start and end of the cell.
     if (e.key === "ArrowUp" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
       const txt = li.querySelector(":scope > .row > .text");
-      if (txt && document.activeElement === txt) {
-        const flat = getFlatText(txt);
-        const off = getCaretOffset(txt);
-        if (off > 0 && flat.lastIndexOf("\n", off - 1) !== -1) return;
-      }
+      if (txt && document.activeElement === txt && !isCaretOnFirstVisualLine(txt)) return;
       const prev = getPrevCell(li);
       if (prev) {
         e.preventDefault();
@@ -841,11 +876,7 @@
     }
     if (e.key === "ArrowDown" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
       const txt = li.querySelector(":scope > .row > .text");
-      if (txt && document.activeElement === txt) {
-        const flat = getFlatText(txt);
-        const off = getCaretOffset(txt);
-        if (off >= 0 && flat.indexOf("\n", off) !== -1) return;
-      }
+      if (txt && document.activeElement === txt && !isCaretOnLastVisualLine(txt)) return;
       const next = getNextCell(li);
       if (next) {
         e.preventDefault();
