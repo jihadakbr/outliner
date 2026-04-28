@@ -642,23 +642,35 @@
     return rangeProbeRect(sel.getRangeAt(0));
   }
   function isCaretOnFirstVisualLine(el) {
+    // Textual short-circuit: if there is a \n before the caret, we are past
+    // the first text line, so definitely not on the first visual line. This
+    // is reliable; the rect check below can return degenerate (zero) rects
+    // at certain caret positions in some browsers and would falsely report
+    // "on first line", causing arrow keys to jump out of multi-line cells.
+    const flat = getFlatText(el);
+    const off = getCaretOffset(el);
+    if (off > 0 && flat.lastIndexOf("\n", off - 1) !== -1) return false;
+    // We are on the first text line; refine using rects to catch soft-wrap.
     const cr = caretRect();
-    if (!cr) return true;
+    if (!cr || !cr.height) return true;
     const start = document.createRange();
     start.selectNodeContents(el);
     start.collapse(true);
     const sr = rangeProbeRect(start);
-    if (!sr) return true;
+    if (!sr || !sr.height) return true;
     return cr.top <= sr.top + 2;
   }
   function isCaretOnLastVisualLine(el) {
+    const flat = getFlatText(el);
+    const off = getCaretOffset(el);
+    if (off >= 0 && flat.indexOf("\n", off) !== -1) return false;
     const cr = caretRect();
-    if (!cr) return true;
+    if (!cr || !cr.height) return true;
     const end = document.createRange();
     end.selectNodeContents(el);
     end.collapse(false);
     const er = rangeProbeRect(end);
-    if (!er) return true;
+    if (!er || !er.height) return true;
     return cr.bottom >= er.bottom - 2;
   }
 
