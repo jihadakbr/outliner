@@ -822,7 +822,16 @@
       return;
     }
     // Arrow Up/Down -> move caret to prev/next cell in document order
+    // ArrowUp/Down only crosses cells when the caret is on the first / last
+    // textual line of this cell. Otherwise let the browser move the caret
+    // within the cell as normal multi-line editing.
     if (e.key === "ArrowUp" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      const txt = li.querySelector(":scope > .row > .text");
+      if (txt && document.activeElement === txt) {
+        const flat = getFlatText(txt);
+        const off = getCaretOffset(txt);
+        if (off > 0 && flat.lastIndexOf("\n", off - 1) !== -1) return;
+      }
       const prev = getPrevCell(li);
       if (prev) {
         e.preventDefault();
@@ -831,6 +840,12 @@
       return;
     }
     if (e.key === "ArrowDown" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+      const txt = li.querySelector(":scope > .row > .text");
+      if (txt && document.activeElement === txt) {
+        const flat = getFlatText(txt);
+        const off = getCaretOffset(txt);
+        if (off >= 0 && flat.indexOf("\n", off) !== -1) return;
+      }
       const next = getNextCell(li);
       if (next) {
         e.preventDefault();
