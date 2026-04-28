@@ -896,6 +896,7 @@
       if (existing) selectOffsets(txt, ln.start, ln.start + existing.len);
       else setCaretAtOffset(txt, ln.start);
       writeListItem(kind, token);
+      renumberCellLists(txt);
       return;
     }
 
@@ -914,9 +915,60 @@
       else setCaretAtOffset(txt, ln.start);
       writeListItem(kind, t);
     }
+    renumberCellLists(txt);
   }
 
   // Indent/outdent logic for a single line (used by Tab / Shift+Tab, per-line in multi-line selections).
+  // Re-sequences num1 / num2 prefixes throughout the cell so contiguous
+  // numbered runs are always "1, 2, 3, ..." / "a, b, c, ...". Called after
+  // tab / untab / list-insert operations so neighbouring lines auto-correct.
+  function renumberCellLists(txt) {
+    const flat = getFlatText(txt);
+    const linesText = flat.split("\n");
+    const lineMeta = [];
+    {
+      let pos = 0;
+      for (const t of linesText) {
+        lineMeta.push({ start: pos, end: pos + t.length, text: t });
+        pos += t.length + 1;
+      }
+    }
+    const fixes = [];
+    let n1seq = 0;
+    let n2seq = 0;
+    for (let i = 0; i < lineMeta.length; i++) {
+      const t = lineMeta[i].text;
+      const m1 = t.match(NUM1_RE);
+      const m2 = t.match(NUM2_RE);
+      if (m1) {
+        n1seq++;
+        n2seq = 0;
+        const expected = String(n1seq);
+        if (m1[1] !== expected) {
+          fixes.push({ i, type: "num1", token: expected, currLen: m1[0].length });
+        }
+      } else if (m2) {
+        n2seq++;
+        const idx = Math.min(n2seq - 1, 25);
+        const expected = String.fromCharCode("a".charCodeAt(0) + idx);
+        if (m2[1] !== expected) {
+          fixes.push({ i, type: "num2", token: expected, currLen: m2[0].length });
+        }
+      } else {
+        n1seq = 0;
+        n2seq = 0;
+      }
+    }
+    if (!fixes.length) return;
+    // Apply bottom-up so earlier offsets remain valid.
+    fixes.sort((a, b) => b.i - a.i);
+    for (const fix of fixes) {
+      const ln = lineMeta[fix.i];
+      selectOffsets(txt, ln.start, ln.start + fix.currLen);
+      writeNumber(fix.type, fix.token);
+    }
+  }
+
   // seqIdx (optional) is the 0-based position of this line within a multi-line
   // batch, restricted to lines of the same convertible type. It controls the
   // sequential token used when converting num1 -> num2 ("a", "b", "c", ...).
@@ -1113,6 +1165,7 @@
           if (e.shiftKey) outdentLine(txt, lines[i], seqIdx[i]);
           else indentLine(txt, lines[i], seqIdx[i]);
         }
+        renumberCellLists(txt);
         scheduleSave();
         return;
       }
@@ -1141,6 +1194,7 @@
           indentLine(txt, ln);
         }
       }
+      renumberCellLists(txt);
       scheduleSave();
       return;
     }
